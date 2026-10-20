@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      1.1
+// @version      1.2
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -15,9 +15,9 @@
   /* =====================================================================
      EXAMENS TYPES — chaque morceau entre deux points ou deux virgules
      devient un bouton.
-     shortcut: copie des textes du script principal, à fusionner si la bêta est adoptée
      ===================================================================== */
   const EXAMENS = [
+    { nom: 'Général', texte: 'Pas de signe de déshydratation. Bon état général. Consigne d\'urgence donnée et comprise par le patient. Consigne de revoir son médecin traitant. Traitement symptomatique.' },
     { nom: 'Cardio', texte: 'BDC réguliers, pas de souffle, pas de douleur thoracique, pas de signe d\'IC.' },
     { nom: 'Pneumo', texte: 'MV bilatéral symétrique, pas de bruit surajouté.' },
     { nom: 'Abdo', texte: 'Ventre souple dépressible, pas de défense. Pas de signe fonctionnel urinaire, pas de douleur à l\'ébranlement lombaire.' },
@@ -96,8 +96,8 @@
   /* ===== Style : animations douces et réponse immédiate au toucher ===== */
   const css = document.createElement('style');
   css.textContent = `
-    #sr-beta { position: fixed; left: 12px; bottom: 170px; z-index: 99999;
-      display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-family: sans-serif; }
+    #sr-beta { position: fixed; right: 12px; bottom: 170px; z-index: 99999;
+      display: flex; flex-direction: column; align-items: flex-end; gap: 8px; font-family: sans-serif; }
     #sr-beta button { touch-action: manipulation; -webkit-tap-highlight-color: transparent;
       border: none; border-radius: 20px; padding: 10px 14px; font-size: 15px; color: #fff;
       background: #6b8fd6; box-shadow: 0 2px 6px rgba(0,0,0,.25); cursor: pointer;
@@ -111,7 +111,7 @@
     #sr-beta .panneau { display: flex; flex-wrap: wrap; gap: 6px; max-width: 80vw; max-height: 50vh;
       overflow-y: auto; padding: 8px; border-radius: 16px; background: rgba(255,255,255,.92);
       box-shadow: 0 4px 14px rgba(0,0,0,.25);
-      transition: opacity .18s ease, transform .18s ease; transform-origin: bottom left; }
+      transition: opacity .18s ease, transform .18s ease; transform-origin: bottom right; }
     #sr-beta .panneau.cache { opacity: 0; transform: translateY(8px) scale(.97); pointer-events: none; }
   `;
 
