@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      1.2
+// @version      1.3
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -17,7 +17,9 @@
      devient un bouton.
      ===================================================================== */
   const EXAMENS = [
-    { nom: 'Général', texte: 'Pas de signe de déshydratation. Bon état général. Consigne d\'urgence donnée et comprise par le patient. Consigne de revoir son médecin traitant. Traitement symptomatique.' },
+    { nom: 'Général', texte: 'Pas de signe de déshydratation. Bon état général.' },
+    // onglet: 'CAT' -> écrit dans le Commentaire de l'onglet CAT (par défaut : EXAM)
+    { nom: 'CAT', onglet: 'CAT', texte: 'Consigne d\'urgence donnée et comprise par le patient. Consigne de revoir son médecin traitant. Traitement symptomatique.' },
     { nom: 'Cardio', texte: 'BDC réguliers, pas de souffle, pas de douleur thoracique, pas de signe d\'IC.' },
     { nom: 'Pneumo', texte: 'MV bilatéral symétrique, pas de bruit surajouté.' },
     { nom: 'Abdo', texte: 'Ventre souple dépressible, pas de défense. Pas de signe fonctionnel urinaire, pas de douleur à l\'ébranlement lombaire.' },
@@ -52,9 +54,10 @@
     return champs.find((el) => el.offsetWidth > 0 || el.offsetHeight > 0) || champs[0];
   }
 
-  function surOngletExam(action) {
+  // Passe sur l'onglet voulu (EXAM ou CAT), puis agit une fois le bon Commentaire affiché
+  function surOnglet(nom, action) {
     const onglet = [...document.querySelectorAll('body *')].find(
-      (el) => el.children.length === 0 && el.textContent.trim() === 'EXAM'
+      (el) => el.children.length === 0 && el.textContent.trim() === nom
     );
     if (!onglet) return action();
     onglet.click();
@@ -145,6 +148,7 @@
     // Écran 2 : les morceaux d'un examen. Vert = présent dans le Commentaire ;
     // un appui sur un bouton vert retire le morceau.
     function afficherExamen(ex) {
+      const surOngletExam = (action) => surOnglet(ex.onglet || 'EXAM', action);
       const textes = decouper(ex.texte);
       const morceaux = textes.map((m) => bouton(m, '', () => surOngletExam(() => {
         if (estPresent(m)) { retirer([m]); flashRouge([b(m)]); } else inserer(m);
@@ -163,7 +167,7 @@
         tout.classList.toggle('fait', textes.every(estPresent));
       }
       panneau.replaceChildren(bouton('← ' + ex.nom, 'retour', afficherListe), tout, ...morceaux);
-      rafraichir();
+      surOngletExam(rafraichir); // les couleurs se lisent dans le Commentaire du bon onglet
     }
 
     const principal = bouton('🧪 Examen β', 'principal', () => {
