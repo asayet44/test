@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      1.0
+// @version      1.1
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -75,6 +75,24 @@
     return true;
   }
 
+  const estPresent = (texte) => !!getCommentaire()?.value.includes(texte);
+
+  // Supprime la dernière occurrence de chaque morceau, avec l'espace qui le séparait du reste
+  function retirer(textes) {
+    const champ = getCommentaire();
+    if (!champ) return;
+    let v = champ.value;
+    for (const t of textes) {
+      let debut = v.lastIndexOf(t);
+      if (debut < 0) continue;
+      let fin = debut + t.length;
+      if (v[debut - 1] === ' ') debut--;
+      else if (v[fin] === ' ') fin++;
+      v = v.slice(0, debut) + v.slice(fin);
+    }
+    setValue(champ, v);
+  }
+
   /* ===== Style : animations douces et réponse immédiate au toucher ===== */
   const css = document.createElement('style');
   css.textContent = `
@@ -89,6 +107,7 @@
     #sr-beta .retour { background: #888; }
     #sr-beta .tout { background: #2e5fb8; }
     #sr-beta .fait { background: #2e9e5b; }
+    #sr-beta .retire { background: #d64545; }
     #sr-beta .panneau { display: flex; flex-wrap: wrap; gap: 6px; max-width: 80vw; max-height: 50vh;
       overflow-y: auto; padding: 8px; border-radius: 16px; background: rgba(255,255,255,.92);
       box-shadow: 0 4px 14px rgba(0,0,0,.25);
@@ -117,18 +136,34 @@
       panneau.replaceChildren(...EXAMENS.map((ex) => bouton(ex.nom, '', () => afficherExamen(ex))));
     }
 
-    // Écran 2 : les morceaux d'un examen ; un morceau inséré passe au vert
+    // Rouge un instant pour montrer la suppression, puis retour à la couleur normale
+    function flashRouge(boutons) {
+      boutons.forEach((b) => b.classList.add('retire'));
+      setTimeout(() => boutons.forEach((b) => b.classList.remove('retire')), 600);
+    }
+
+    // Écran 2 : les morceaux d'un examen. Vert = présent dans le Commentaire ;
+    // un appui sur un bouton vert retire le morceau.
     function afficherExamen(ex) {
-      const morceaux = decouper(ex.texte).map((m) =>
-        bouton(m, '', (e) => surOngletExam(() => { if (inserer(m)) e.target.classList.add('fait'); }))
-      );
-      const tout = bouton('Tout', 'tout', (e) => surOngletExam(() => {
-        if (inserer(decouper(ex.texte).join(' '))) {
-          e.target.classList.add('fait');
-          morceaux.forEach((b) => b.classList.add('fait'));
-        }
+      const textes = decouper(ex.texte);
+      const morceaux = textes.map((m) => bouton(m, '', () => surOngletExam(() => {
+        if (estPresent(m)) { retirer([m]); flashRouge([b(m)]); } else inserer(m);
+        rafraichir();
+      })));
+      const b = (m) => morceaux[textes.indexOf(m)];
+      const tout = bouton('Tout', 'tout', () => surOngletExam(() => {
+        const manquants = textes.filter((m) => !estPresent(m));
+        if (manquants.length) inserer(manquants.join(' '));
+        else { retirer(textes); flashRouge([tout, ...morceaux]); }
+        rafraichir();
       }));
+      // La couleur suit le texte réellement présent, même après fermeture du panneau
+      function rafraichir() {
+        textes.forEach((m) => b(m).classList.toggle('fait', estPresent(m)));
+        tout.classList.toggle('fait', textes.every(estPresent));
+      }
       panneau.replaceChildren(bouton('← ' + ex.nom, 'retour', afficherListe), tout, ...morceaux);
+      rafraichir();
     }
 
     const principal = bouton('🧪 Examen β', 'principal', () => {
