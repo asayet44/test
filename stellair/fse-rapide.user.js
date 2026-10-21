@@ -1,10 +1,13 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.2
-// @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE
+// @version      0.3
+// @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @connect      api.sumup.com
 // @updateURL    https://raw.githubusercontent.com/asayet44/test/main/stellair/fse-rapide.user.js
 // @downloadURL  https://raw.githubusercontent.com/asayet44/test/main/stellair/fse-rapide.user.js
 // ==/UserScript==
@@ -76,6 +79,85 @@
   function totalActes() {
     const m = document.body.innerText.match(/Total actes\s*([\d.,]+)\s*€/);
     return m ? parseFloat(m[1].replace(',', '.')) : 0;
+  }
+
+  // ---------- paiement CB sur le SumUp Solo (Cloud API) ----------
+  // Identifiants gardés dans le stockage Violentmonkey (onglet « Valeurs » du script pour les corriger), jamais sur GitHub.
+  const CLE_CB = 'stellair-cb';
+  const montantPatient = (texte) => {
+    const m = texte.match(/À payer par le patient\s*([\d.,]+)\s*€/);
+    return m ? parseFloat(m[1].replace(',', '.')) : null;
+  };
+  console.assert(montantPatient('À payer par le patient\n9.00 €') === 9 && montantPatient('Part patient 9.00 €') === null);
+
+  let cb = 0; // reste à payer mémorisé au passage sur le récapitulatif
+  try { cb = parseFloat(sessionStorage.getItem(CLE_CB)) || 0; } catch (e) { /* rien */ }
+  function fixerCb(m) {
+    cb = m;
+    try { sessionStorage.setItem(CLE_CB, String(m)); } catch (e) { /* stockage bloqué */ }
+    dessiner();
+  }
+  let surRecap = false;
+  function surveillerRecap() {
+    const m = montantPatient(document.body.innerText);
+    if (m !== null && !surRecap) fixerCb(m); // une seule capture par passage, pour ne pas faire réapparaître un bouton déjà payé
+    surRecap = m !== null;
+  }
+
+  function reglage(nom, question) {
+    let v = GM_getValue(nom, '');
+    if (!v) {
+      v = norm(prompt(question) || '');
+      if (!v) throw new Error('réglage « ' + nom + ' » manquant');
+      GM_setValue(nom, v);
+    }
+    return v;
+  }
+
+  function sumup(chemin, corps) {
+    const cle = reglage('cleApi', 'Clé API SumUp (sup_sk_…) :');
+    const marchand = reglage('codeMarchand', 'Code marchand SumUp (M…) :');
+    return new Promise((ok, ko) => GM_xmlhttpRequest({
+      method: 'POST',
+      url: `https://api.sumup.com/v0.1/merchants/${marchand}${chemin}`,
+      headers: { Authorization: 'Bearer ' + cle, 'Content-Type': 'application/json' },
+      data: JSON.stringify(corps),
+      timeout: 15000,
+      onload: (r) => r.status < 300 ? ok(JSON.parse(r.responseText || '{}'))
+        : ko(new Error(`SumUp ${r.status} : ${(r.responseText || '').slice(0, 150)}`)),
+      onerror: () => ko(new Error('SumUp injoignable')),
+      ontimeout: () => ko(new Error('SumUp ne répond pas')),
+    }));
+  }
+
+  let envoi = false;
+  async function encaisser() {
+    if (envoi || !(cb > 0)) return;
+    envoi = true;
+    dessiner();
+    try {
+      const appId = reglage('appId', 'Identifiant d\'application de la clé affiliée (ex. stellair-fse-rapide) :');
+      const affiliee = reglage('cleAffiliee', 'Clé affiliée SumUp :');
+      let lecteur = GM_getValue('lecteur', '');
+      if (!lecteur) {
+        const code = norm(prompt('Solo déconnecté : saisis le code d\'appairage affiché sur le terminal :') || '');
+        if (!code) throw new Error('appairage annulé');
+        lecteur = (await sumup('/readers', { pairing_code: code, name: 'Cabinet' })).id;
+        GM_setValue('lecteur', lecteur);
+      }
+      await sumup(`/readers/${lecteur}/checkout`, {
+        total_amount: { currency: 'EUR', minor_unit: 2, value: Math.round(cb * 100) },
+        description: 'Consultation',
+        affiliate: { app_id: appId, key: affiliee, foreign_transaction_id: 'stellair-' + Date.now() },
+      });
+      const envoye = cb;
+      fixerCb(0);
+      afficher(`💳 ${envoye.toFixed(2)} € envoyé au Solo`);
+    } catch (e) {
+      afficher('⚠ CB : ' + e.message);
+    }
+    envoi = false;
+    dessiner();
   }
 
   // ---------- compteur SNP de la semaine (lundi → dimanche, sur ce navigateur) ----------
@@ -196,6 +278,7 @@
   let occupe = false;
   setInterval(async () => {
     if (!document.getElementById('sfr-panneau')) document.body.appendChild(panneau);
+    surveillerRecap();
     if (!flux || occupe) return;
     if (Date.now() - flux.debut > DUREE_MAX_MS) return terminer('Temps dépassé, arrêt');
     const etape = ETAPES.find((e) => !flux.faits.includes(e.nom) && e.detecte());
@@ -247,6 +330,19 @@
       if (n >= 0) fixerSnp(n);
     };
     panneau.append(compteur);
+    if (cb > 0) {
+      const carte = document.createElement('button');
+      carte.textContent = envoi ? '💳 Envoi…' : `💳 CB ${cb.toFixed(2).replace('.', ',')} €`;
+      carte.disabled = envoi;
+      carte.title = 'Envoyer le reste à payer au SumUp Solo';
+      carte.style.cssText = 'padding:8px;border:0;border-radius:8px;background:#2a9d5c;color:#fff;font-weight:bold;cursor:pointer';
+      carte.onclick = encaisser;
+      const oubli = document.createElement('button');
+      oubli.textContent = 'Pas de CB';
+      oubli.style.cssText = 'padding:2px;border:0;background:none;color:#666;font-size:11px;cursor:pointer';
+      oubli.onclick = () => fixerCb(0);
+      panneau.append(carte, oubli);
+    }
     if (flux) {
       const arret = document.createElement('button');
       arret.textContent = '■ Stop';
