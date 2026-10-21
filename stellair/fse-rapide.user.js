@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.7
+// @version      0.8
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -130,7 +130,7 @@
   function reglage(nom, question) {
     let v = GM_getValue(nom, '');
     if (!v) {
-      v = norm(prompt(question) || '');
+      v = norm(fen().prompt(question) || '');
       if (!v) throw new Error('réglage « ' + nom + ' » manquant');
       GM_setValue(nom, v);
     }
@@ -166,7 +166,7 @@
       reglage('codeMarchand', 'Code marchand SumUp (M…) :');
       reglage('appId', 'Identifiant d\'application de la clé affiliée (ex. stellair-fse-rapide) :');
       reglage('cleAffiliee', 'Clé affiliée SumUp :');
-      const code = norm(prompt('Sur le Solo : Connexions → API → Connecter, puis saisis le code affiché :') || '');
+      const code = norm(fen().prompt('Sur le Solo : Connexions → API → Connecter, puis saisis le code affiché :') || '');
       if (!code) throw new Error('appairage annulé');
       GM_setValue('lecteur', (await sumup('/readers', { pairing_code: code, name: 'Cabinet' })).id);
       afficher('✔ Solo connecté');
@@ -304,7 +304,7 @@
 
   function demarrer(c) {
     if (c.snp && snp() >= SNP_MAX_SEMAINE &&
-        !confirm(`Déjà ${snp()} SNP cette semaine (max ${SNP_MAX_SEMAINE}). Continuer quand même ?`)) return;
+        !fen().confirm(`Déjà ${snp()} SNP cette semaine (max ${SNP_MAX_SEMAINE}). Continuer quand même ?`)) return;
     flux = { cotation: c.nom, debut: Date.now(), faits: [] };
     noter({ cotation: c.nom }, true);
     sauver();
@@ -319,7 +319,7 @@
 
   let occupe = false;
   setInterval(async () => {
-    if (!document.getElementById('sfr-panneau')) document.body.appendChild(panneau);
+    if (!panneau.isConnected) document.body.appendChild(panneau);
     surveillerRecap();
     if (!flux || occupe) return;
     if (Date.now() - flux.debut > DUREE_MAX_MS) return terminer('Temps dépassé, arrêt');
@@ -339,6 +339,28 @@
 
   // ---------- panneau ----------
   const panneau = document.createElement('div');
+  const fen = () => panneau.ownerDocument.defaultView || window;
+
+  // Panneau détaché dans une petite fenêtre toujours au premier plan (Document Picture-in-Picture, Firefox 151+).
+  let pip = null;
+  async function detacher() {
+    try {
+      pip = await window.documentPictureInPicture.requestWindow({ width: 190, height: 480 });
+    } catch (e) {
+      return afficher('⚠ Détachement impossible : ' + e.message);
+    }
+    pip.document.title = 'Stellair';
+    pip.document.body.style.margin = '0';
+    Object.assign(panneau.style, { position: 'static', width: 'auto' });
+    pip.document.body.append(panneau);
+    pip.addEventListener('pagehide', () => {
+      pip = null;
+      Object.assign(panneau.style, { position: 'fixed', width: '130px' });
+      document.body.append(panneau);
+      dessiner();
+    });
+    dessiner();
+  }
   panneau.id = 'sfr-panneau';
   Object.assign(panneau.style, {
     position: 'fixed', right: '8px', top: '35%', zIndex: 99999, width: '130px',
@@ -368,7 +390,7 @@
     compteur.title = 'Cliquer pour corriger';
     compteur.style.cssText = 'font-size:12px;cursor:pointer;color:#333';
     compteur.onclick = () => {
-      const n = parseInt(prompt('Nombre de SNP cette semaine :', snp()), 10);
+      const n = parseInt(fen().prompt('Nombre de SNP cette semaine :', snp()), 10);
       if (n >= 0) fixerSnp(n);
     };
     panneau.append(compteur);
@@ -392,6 +414,14 @@
       oubli.style.cssText = 'padding:2px;border:0;background:none;color:#666;font-size:11px;cursor:pointer';
       oubli.onclick = () => { noter({ paiement: 'Pas de CB (autre mode)' }); fixerCb(0); };
       panneau.append(carte, oubli);
+    }
+    if (!pip && window.documentPictureInPicture) {
+      const d = document.createElement('button');
+      d.textContent = '📌 Détacher';
+      d.title = 'Ouvrir le panneau dans une petite fenêtre au-dessus de tout';
+      d.style.cssText = 'padding:2px;border:1px solid #4287d0;border-radius:8px;background:#fff;color:#4287d0;font-size:11px;cursor:pointer';
+      d.onclick = detacher;
+      panneau.append(d);
     }
     if (flux) {
       const arret = document.createElement('button');
