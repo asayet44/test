@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.11
+// @version      0.12
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -93,11 +93,15 @@
   }
 
   // null = libellé absent (mise en page téléphone) ; sinon le montant lu, même séparé par d'autres mots.
+  // Le « € » peut être absent du texte (dessiné en CSS ou coupé sur téléphone) : on lit le montant à 2 décimales.
+  // Plusieurs « Total actes » possibles dans la page : on garde le plus grand.
   function totalActes(texte = document.body.innerText) {
-    const m = texte.match(/Total (?:des )?actes[^\d€]{0,40}?([\d][\d\s.,]*)\s*€/i);
-    return m ? parseFloat(m[1].replace(/\s/g, '').replace(',', '.')) : (/Total (des )?actes/i.test(texte) ? 0 : null);
+    if (!/Total (des )?actes/i.test(texte)) return null;
+    const montants = [...texte.matchAll(/Total (?:des )?actes[^\d]{0,40}?(\d[\d\s]*[.,]\d{2})/gi)]
+      .map((m) => parseFloat(m[1].replace(/\s/g, '').replace(',', '.')));
+    return Math.max(0, ...montants);
   }
-  console.assert(totalActes('Total actes 30.00 €') === 30 && totalActes('Total actes :\n30,00 €') === 30 &&
+  console.assert(totalActes('Total actes\t72.50\nTotal indemnités 0.00') === 72.5 && totalActes('Total actes 30.00 €') === 30 && totalActes('Total actes :\n30,00 €') === 30 &&
     totalActes('Total actes\n0.00 €') === 0 && totalActes('rien') === null);
 
   // ---------- paiement CB sur le SumUp Solo (Cloud API) ----------
