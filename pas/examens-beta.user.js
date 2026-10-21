@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      1.5
+// @version      1.6
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -23,7 +23,7 @@
     { nom: 'Cardio', texte: 'BDC réguliers, pas de souffle, pas de douleur thoracique, pas de signe d\'IC.' },
     { nom: 'Pneumo', texte: 'MV bilatéral symétrique, pas de bruit surajouté.' },
     { nom: 'Abdo', texte: 'Ventre souple dépressible, pas de défense. Pas de signe fonctionnel urinaire, pas de douleur à l\'ébranlement lombaire.' },
-    { nom: 'ORL', texte: 'Pas d\'OMA. Pas d\'angine. Pas d\'adénopathie cervicale.' },
+    { nom: 'ORL', morceaux: ['Pas d\'OMA.', 'Pas d\'angine.', 'Pas d\'adénopathie cervicale.', 'Angine.', 'Streptatest +.', 'Streptatest -.', 'Adénopathies cervicales.', 'Fièvre.', 'Difficulté à l\'alimentation.', 'Alimentation conservée.'] },
     { nom: 'Gastro', texte: 'Tableau évocateur d\'une gastro-entérite simple sans signe de gravité. Pas de signe de déshydratation. Bon état général. Ventre souple dépressible, pas de défense.' },
     { nom: 'Lumbago', texte: 'Lombalgie commune non déficitaire sans signe de gravité. Pas de syndrome de la queue de cheval. Pas de déficit moteur. Pas de déficit sensitif. Lasègue et Léri normaux. ROT L4 S1 normaux.' },
     { nom: 'Oeil', texte: 'Orgelet simple sans signe de gravité. Chalazion simple sans signe de gravité. Pas de BAV. Pas de lésion cornée. Pas de rougeur.' },
