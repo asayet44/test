@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.15
+// @version      0.16
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -339,7 +339,11 @@
       detecte: () => finVisible(),
       action: async () => {
         await pause(300);
-        if (cb > 0) return cliquer(cliquable(plusBas(chercher(/^Ajouter un règlement/)) || stop('« Ajouter un règlement » introuvable')));
+        if (cb > 0) {
+          flux.attente = true; // le déroulé reprend au clic sur un mode de paiement (choisirMode)
+          sauver();
+          return afficher(`Reste ${cb.toFixed(2).replace('.', ',')} € : mode de paiement ?`);
+        }
         const ok = plusBas(chercher('OK'));
         if (!ok) stop('Bouton OK introuvable');
         cliquer(cliquable(ok));
@@ -348,14 +352,16 @@
     },
     {
       nom: 'règlement',
-      detecte: () => present(/^Reste à payer patient/) && present('Enregistrer'),
+      detecte: () => flux.choix in MODES && present(/^Reste à payer patient/) && present('Enregistrer'),
       action: async () => {
         await pause(300);
-        if (!choisirCarte()) stop('Choisis « Carte bancaire » puis Enregistrer');
+        const mode = MODES[flux.choix];
+        if (!choisirType(mode.re)) stop(`Choisis « ${mode.nom} » puis Enregistrer`);
         cliquer(cliquable(plusBas(chercher('Enregistrer'))));
-        noter({ reglement: 'Règlement CB enregistré dans Stellair' });
-        terminer('FSE validée ✔, règlement CB enregistré');
-        await encaisser(); // le Solo affiche le montant ; si le patient paie autrement, annule sur le Solo
+        noter({ reglement: `Règlement ${mode.nom} enregistré dans Stellair` });
+        terminer(`FSE validée ✔, règlement ${mode.nom} enregistré`);
+        if (mode.solo) await encaisser(); // le Solo affiche le montant
+        else fixerCb(0);
       },
     },
   ];
@@ -363,10 +369,35 @@
   // Lu sur le texte affiché de toute la page (insensible à la casse et à la structure de la fenêtre).
   const finVisible = () => /Feuille de soins terminée|facture a été sécurisée/i
     .test(document.documentElement.innerText.normalize('NFC'));
-  // Type de règlement : liste native (select) ou menu Stellair déjà sur « Carte bancaire ».
-  function choisirCarte() {
+  const MODES = {
+    cb: { nom: 'Carte bancaire', bouton: '💳 CB', re: /^Carte bancaire/i, solo: true },
+    especes: { nom: 'Espèces', bouton: 'Espèces', re: /^Esp[eè]ces/i },
+    cheque: { nom: 'Chèque', bouton: 'Chèque', re: /^Ch[eè]que/i },
+  };
+
+  // Clic du médecin sur un mode : on reprend le déroulé depuis la fenêtre « Feuille de soins terminée ».
+  function choisirMode(choix) {
+    flux.attente = false;
+    flux.choix = choix;
+    flux.debut = Date.now(); // le temps passé à demander au patient ne compte pas
+    sauver();
+    try {
+      if (choix === 'plus tard') {
+        cliquer(cliquable(plusBas(chercher('OK')) || stop('Bouton OK introuvable')));
+        noter({ reglement: 'Règlement à saisir plus tard' });
+        return terminer('FSE validée ✔, règlement plus tard');
+      }
+      cliquer(cliquable(plusBas(chercher(/^Ajouter un règlement/)) || stop('« Ajouter un règlement » introuvable')));
+      afficher(`${MODES[choix].nom} : enregistrement…`);
+    } catch (e) {
+      terminer('⚠ ' + e.message);
+    }
+  }
+
+  // Type de règlement : liste native (select), sinon on vérifie que Stellair l'affiche déjà.
+  function choisirType(re) {
     for (const liste of document.querySelectorAll('select')) {
-      const opt = [...liste.options].find((o) => norm(o.textContent) === 'Carte bancaire');
+      const opt = [...liste.options].find((o) => re.test(norm(o.textContent)));
       if (!opt || !visible(liste)) continue;
       if (!opt.selected) {
         liste.value = opt.value;
@@ -374,7 +405,7 @@
       }
       return true;
     }
-    return present('Carte bancaire');
+    return present(re);
   }
 
   function demarrer(c) {
@@ -397,7 +428,7 @@
     if (!panneau.isConnected) document.body.appendChild(panneau);
     surveillerRecap();
     if (!flux || occupe) return;
-    if (Date.now() - flux.debut > DUREE_MAX_MS) return terminer(resume.validee ? 'FSE validée ✔ (fin à faire à la main)' : 'Temps dépassé, arrêt');
+    if (!flux.attente && Date.now() - flux.debut > DUREE_MAX_MS) return terminer(resume.validee ? 'FSE validée ✔ (fin à faire à la main)' : 'Temps dépassé, arrêt');
     const etape = ETAPES.find((e) => !flux.faits.includes(e.nom) && e.detecte());
     if (!etape) return;
     occupe = true;
@@ -447,8 +478,43 @@
   let message = '';
   function afficher(m) { message = m; dessiner(); }
 
+  let reduit = false;
+  try { reduit = localStorage.getItem('stellair-reduit') === '1'; } catch (e) { /* rien */ }
+  function reduire(oui) {
+    reduit = oui;
+    try { localStorage.setItem('stellair-reduit', oui ? '1' : '0'); } catch (e) { /* stockage bloqué */ }
+    dessiner();
+  }
+  const bouton = (texte, style, action) => {
+    const b = document.createElement('button');
+    b.textContent = texte;
+    b.style.cssText = style;
+    b.onclick = action;
+    return b;
+  };
+
   function dessiner() {
     panneau.replaceChildren();
+    const attente = flux && flux.attente;
+    panneau.style.width = reduit && !attente || pip ? 'auto' : '130px';
+    // Réduit : une pastille, sauf quand un choix de paiement est demandé.
+    if (reduit && !attente) {
+      panneau.append(bouton(flux ? '⏳ FSE' : '◀ FSE', 'padding:6px;border:0;border-radius:8px;background:#4287d0;color:#fff;font-weight:bold;cursor:pointer',
+        () => reduire(false)));
+      return;
+    }
+    if (attente) {
+      const q = document.createElement('div');
+      q.textContent = `Paiement ${cb.toFixed(2).replace('.', ',')} € :`;
+      q.style.cssText = 'font-weight:bold;color:#333';
+      panneau.append(q);
+      for (const [cle, m] of Object.entries(MODES)) {
+        panneau.append(bouton(m.bouton, `padding:8px;border:0;border-radius:8px;color:#fff;font-weight:bold;cursor:pointer;background:${m.solo ? '#2a9d5c' : '#4287d0'}`,
+          () => choisirMode(cle)));
+      }
+      panneau.append(bouton('Plus tard', 'padding:4px;border:1px solid #999;border-radius:8px;background:#fff;color:#333;cursor:pointer',
+        () => choisirMode('plus tard')));
+    }
     for (const c of COTATIONS) {
       const plein = c.snp && snp() >= SNP_MAX_SEMAINE;
       const b = document.createElement('button');
@@ -478,7 +544,7 @@
       lien.onclick = connecter;
       panneau.append(lien);
     }
-    if (cb > 0) {
+    if (cb > 0 && !flux) {
       const carte = document.createElement('button');
       carte.textContent = envoi ? '💳 Envoi…' : `💳 CB ${cb.toFixed(2).replace('.', ',')} €`;
       carte.disabled = envoi;
@@ -506,6 +572,7 @@
       arret.onclick = () => terminer('Arrêté');
       panneau.append(arret);
     }
+    panneau.append(bouton('▶ Réduire', 'padding:2px;border:0;background:none;color:#4287d0;font-size:11px;cursor:pointer', () => reduire(true)));
     if (resume.total) {
       const r = document.createElement('div');
       r.style.cssText = 'font-size:11px;color:#333;border-top:1px solid #ddd;padding-top:4px;white-space:pre-line';
