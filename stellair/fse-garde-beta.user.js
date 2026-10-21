@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE garde (bêta)
 // @namespace    saisie-rapide-garde
-// @version      0.2
+// @version      0.3
 // @description  Mode de garde (consult / visite, PDS auto) : cotation prédite en un bouton, options SNP et IK, carte Vitale, ALD, validation, règlement et SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @match        https://somenor.net/*
@@ -28,21 +28,41 @@
       }
       return 0;
     };
-    document.addEventListener('click', (ev) => {
-      const lien = ev.target.closest && ev.target.closest('a');
-      if (!lien || txt(lien) !== 'Stellair') return;
-      let bloc = lien.parentElement;
-      while (bloc && !/Comptabilit/.test(bloc.textContent)) bloc = bloc.parentElement;
-      if (!bloc) return;
-      // Lignes d'actes : « VG {30} », « MVR (SAS) {10} »…
-      const codes = [...bloc.querySelectorAll('*')].map(txt).map((t) => t.match(/^([A-Z0-9]+)(?:\s*\([^)]*\))?\s*\{[\d.,]+\}$/))
-        .filter(Boolean).map((m) => m[1]);
-      const paiement = { ESP: 'especes', CHQ: 'cheque', CB: 'cb' };
-      GM_setValue('somelog', {
-        codes: [...new Set(codes)], ik: champ(bloc, 'IK'), t: Date.now(),
-        paiement: Object.keys(paiement).filter((k) => champ(bloc, k) > 0).map((k) => paiement[k])[0] || null,
-      });
-    }, true);
+    function bulle(texte, ok) { // retour visible dans Somelog
+      const d = document.createElement('div');
+      d.textContent = texte;
+      d.style.cssText = `position:fixed;left:8px;bottom:8px;z-index:99999;max-width:320px;padding:8px 10px;border-radius:8px;font:13px sans-serif;color:#fff;background:${ok ? '#2a9d5c' : '#c33'}`;
+      document.body.append(d);
+      setTimeout(() => d.remove(), 6000);
+    }
+    let dernier = 0;
+    function capter(ev) {
+      // Le lien « Stellair » peut être un <a>, un bouton ou un simple texte cliquable.
+      let cible = ev.target;
+      for (let i = 0; i < 4 && cible && txt(cible) !== 'Stellair'; i++) cible = cible.parentElement;
+      if (!cible || txt(cible) !== 'Stellair' || Date.now() - dernier < 1000) return;
+      dernier = Date.now();
+      try {
+        let bloc = cible.parentElement;
+        while (bloc && !/Comptabilit/.test(bloc.textContent)) bloc = bloc.parentElement;
+        if (!bloc) return bulle('Stellair : bloc Comptabilité introuvable', false);
+        // Lignes d'actes : « VG {30} », « MVR (SAS) {10} »…
+        const codes = [...bloc.querySelectorAll('*')].map(txt).map((t) => t.match(/^([A-Z0-9]+)(?:\s*\([^)]*\))?\s*\{[\d.,]+\}$/))
+          .filter(Boolean).map((m) => m[1]);
+        if (!codes.length) return bulle('Stellair : aucun acte lu dans Comptabilité', false);
+        const paiement = { ESP: 'especes', CHQ: 'cheque', CB: 'cb' };
+        const lu = {
+          codes: [...new Set(codes)], ik: champ(bloc, 'IK'), t: Date.now(),
+          paiement: Object.keys(paiement).filter((k) => champ(bloc, k) > 0).map((k) => paiement[k])[0] || null,
+        };
+        GM_setValue('somelog', lu);
+        bulle(`✔ Envoyé à Stellair : ${lu.codes.join(' + ')}${lu.ik ? ' · IK ' + lu.ik : ''}${lu.paiement ? ' · ' + lu.paiement : ''}`, true);
+      } catch (e) {
+        bulle('Stellair : erreur de lecture (' + e.message + ')', false);
+      }
+    }
+    document.addEventListener('pointerdown', capter, true); // avant que le lien n'ouvre l'onglet
+    document.addEventListener('click', capter, true);
     return;
   }
 
