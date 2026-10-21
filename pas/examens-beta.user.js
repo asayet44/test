@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      1.6
+// @version      2.0
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -15,6 +15,9 @@
   /* =====================================================================
      EXAMENS TYPES — chaque morceau entre deux points ou deux virgules
      devient un bouton.
+     Un morceau "Pas de X." a automatiquement un inverse "X." :
+       1er appui = "Pas de X."  ·  2e = "X."  ·  3e = supprimé.
+     Pour choisir l'inverse soi-même : ['texte par défaut.', 'texte inverse.']
      ===================================================================== */
   const EXAMENS = [
     { nom: 'Général', texte: 'Pas de signe de déshydratation. Bon état général.' },
@@ -23,12 +26,12 @@
     { nom: 'Cardio', texte: 'BDC réguliers, pas de souffle, pas de douleur thoracique, pas de signe d\'IC.' },
     { nom: 'Pneumo', texte: 'MV bilatéral symétrique, pas de bruit surajouté.' },
     { nom: 'Abdo', texte: 'Ventre souple dépressible, pas de défense. Pas de signe fonctionnel urinaire, pas de douleur à l\'ébranlement lombaire.' },
-    { nom: 'ORL', morceaux: ['Pas d\'OMA.', 'Pas d\'angine.', 'Pas d\'adénopathie cervicale.', 'Angine.', 'Streptatest +.', 'Streptatest -.', 'Adénopathies cervicales.', 'Fièvre.', 'Difficulté à l\'alimentation.', 'Alimentation conservée.'] },
+    { nom: 'ORL', morceaux: ['Pas d\'OMA.', 'Pas d\'angine.', ['Pas d\'adénopathie cervicale.', 'Adénopathies cervicales.'], ['Streptatest -.', 'Streptatest +.'], 'Fièvre.', ['Alimentation conservée.', 'Difficulté à l\'alimentation.']] },
     { nom: 'Gastro', texte: 'Tableau évocateur d\'une gastro-entérite simple sans signe de gravité. Pas de signe de déshydratation. Bon état général. Ventre souple dépressible, pas de défense.' },
     { nom: 'Lumbago', texte: 'Lombalgie commune non déficitaire sans signe de gravité. Pas de syndrome de la queue de cheval. Pas de déficit moteur. Pas de déficit sensitif. Lasègue et Léri normaux. ROT L4 S1 normaux.' },
     { nom: 'Oeil', texte: 'Orgelet simple sans signe de gravité. Chalazion simple sans signe de gravité. Pas de BAV. Pas de lésion cornée. Pas de rougeur.' },
     // morceaux : liste donnée telle quelle, quand une virgule ne doit pas couper le bouton en deux
-    { nom: 'Uro', morceaux: ['Cystite simple sans signe de gravité.', 'BU normale.', 'BU leucocytes, nitrite et sang +.', 'Pas de douleur à l\'ébranlement lombaire.', 'Pas de SFU.', 'SFU +.'] },
+    { nom: 'Uro', morceaux: ['Cystite simple sans signe de gravité.', ['BU normale.', 'BU leucocytes, nitrite et sang +.'], 'Pas de douleur à l\'ébranlement lombaire.', ['Pas de SFU.', 'SFU +.']] },
   ];
 
   const LIMITE = 1500;
@@ -81,15 +84,41 @@
     return true;
   }
 
-  const estPresent = (texte) => !!getCommentaire()?.value.includes(texte);
+  // [défaut, inverse] : "Pas d'OMA." -> ["Pas d'OMA.", "OMA."] ; sans inverse -> [texte, null]
+  function paire(m) {
+    if (Array.isArray(m)) return m;
+    const reste = m.match(/^Pas d(?:e |')(.+)$/);
+    return [m, reste ? reste[1][0].toUpperCase() + reste[1].slice(1) : null];
+  }
 
-  // Supprime la dernière occurrence de chaque morceau, avec l'espace qui le séparait du reste
+  // Position d'un morceau entier dans le texte : il doit commencer une phrase,
+  // sinon "OMA." serait trouvé à l'intérieur de "Pas d'OMA."
+  function trouver(v, t) {
+    for (let i = v.lastIndexOf(t); i >= 0; i = i ? v.lastIndexOf(t, i - 1) : -1) {
+      const avantOk = /(^|[.!?:\n])\s*$/.test(v.slice(0, i));
+      const apresOk = i + t.length === v.length || /\s/.test(v[i + t.length]);
+      if (avantOk && apresOk) return i;
+    }
+    return -1;
+  }
+
+  const estPresent = (texte) => trouver(getCommentaire()?.value || '', texte) >= 0;
+
+  // Remplace un morceau par un autre, à la même place dans le texte
+  function remplacer(ancien, nouveau) {
+    const champ = getCommentaire();
+    const i = champ ? trouver(champ.value, ancien) : -1;
+    if (i < 0) return;
+    setValue(champ, champ.value.slice(0, i) + nouveau + champ.value.slice(i + ancien.length));
+  }
+
+  // Supprime chaque morceau, avec l'espace qui le séparait du reste
   function retirer(textes) {
     const champ = getCommentaire();
     if (!champ) return;
     let v = champ.value;
     for (const t of textes) {
-      let debut = v.lastIndexOf(t);
+      let debut = trouver(v, t);
       if (debut < 0) continue;
       let fin = debut + t.length;
       if (v[debut - 1] === ' ') debut--;
@@ -114,6 +143,11 @@
     #sr-beta .tout { background: #2e5fb8; }
     #sr-beta .fait { background: #2e9e5b; }
     #sr-beta .retire { background: #d64545; }
+    #sr-beta .inverse { background: #e08a1e; }
+    #sr-beta .nav { display: flex; flex-wrap: wrap; gap: 4px; flex-basis: 100%;
+      padding-bottom: 6px; border-bottom: 1px solid #ccc; }
+    #sr-beta .nav button { font-size: 13px; padding: 6px 10px; background: #888; box-shadow: none; }
+    #sr-beta .nav .courant { background: #7a4fd6; }
     #sr-beta .panneau { display: flex; flex-wrap: wrap; gap: 6px; max-width: 80vw; max-height: 50vh;
       overflow-y: auto; padding: 8px; border-radius: 16px; background: rgba(255,255,255,.92);
       box-shadow: 0 4px 14px rgba(0,0,0,.25);
@@ -152,28 +186,52 @@
       setTimeout(() => boutons.forEach((b) => b.classList.remove('retire')), 600);
     }
 
-    // Écran 2 : les morceaux d'un examen. Vert = présent dans le Commentaire ;
-    // un appui sur un bouton vert retire le morceau.
+    // Écran 2 : les morceaux d'un examen.
+    //   gris = pas écrit · vert = texte par défaut écrit · orange = inverse écrit
     function afficherExamen(ex) {
       const surOngletExam = (action) => surOnglet(ex.onglet || 'EXAM', action);
-      const textes = ex.morceaux || decouper(ex.texte);
-      const morceaux = textes.map((m) => bouton(m, '', () => surOngletExam(() => {
-        if (estPresent(m)) { retirer([m]); flashRouge([b(m)]); } else inserer(m);
-        rafraichir();
-      })));
-      const b = (m) => morceaux[textes.indexOf(m)];
+      const paires = (ex.morceaux || decouper(ex.texte)).map(paire);
+      const etat = ([def, inv]) => (estPresent(def) ? 'fait' : inv && estPresent(inv) ? 'inverse' : '');
+
+      const morceaux = paires.map((p) => {
+        const [def, inv] = p;
+        const b = bouton(def, '', () => surOngletExam(() => {
+          const e = etat(p);
+          if (e === 'fait' && inv) remplacer(def, inv);
+          else if (e === 'fait') { retirer([def]); flashRouge([b]); }
+          else if (e === 'inverse') { retirer([inv]); flashRouge([b]); }
+          else inserer(def);
+          rafraichir();
+        }));
+        return b;
+      });
+
+      // Tout : écrit le texte par défaut de tous les morceaux pas encore écrits ;
+      // si tout est déjà écrit, efface tout
       const tout = bouton('Tout', 'tout', () => surOngletExam(() => {
-        const manquants = textes.filter((m) => !estPresent(m));
-        if (manquants.length) inserer(manquants.join(' '));
-        else { retirer(textes); flashRouge([tout, ...morceaux]); }
+        const vides = paires.filter((p) => !etat(p));
+        if (vides.length) inserer(vides.map((p) => p[0]).join(' '));
+        else { retirer(paires.flat().filter(Boolean)); flashRouge([tout, ...morceaux]); }
         rafraichir();
       }));
-      // La couleur suit le texte réellement présent, même après fermeture du panneau
+
+      // Couleur et libellé suivent le texte réellement présent dans le Commentaire
       function rafraichir() {
-        textes.forEach((m) => b(m).classList.toggle('fait', estPresent(m)));
-        tout.classList.toggle('fait', textes.every(estPresent));
+        paires.forEach((p, i) => {
+          const e = etat(p);
+          morceaux[i].classList.toggle('fait', e === 'fait');
+          morceaux[i].classList.toggle('inverse', e === 'inverse');
+          morceaux[i].textContent = (e === 'inverse' ? p[1] : p[0]) + (p[1] ? ' ⇄' : '');
+        });
+        tout.classList.toggle('fait', paires.every((p) => etat(p)));
       }
-      panneau.replaceChildren(bouton('← ' + ex.nom, 'retour', afficherListe), tout, ...morceaux);
+
+      // Barre des groupes : on passe d'un groupe à l'autre sans revenir en arrière
+      const nav = document.createElement('div');
+      nav.className = 'nav';
+      nav.append(...EXAMENS.map((g) => bouton(g.nom, g === ex ? 'courant' : '', () => afficherExamen(g))));
+
+      panneau.replaceChildren(nav, tout, ...morceaux);
       surOngletExam(rafraichir); // les couleurs se lisent dans le Commentaire du bon onglet
     }
 
