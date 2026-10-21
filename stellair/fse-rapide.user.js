@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.12
+// @version      0.13
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -325,15 +325,55 @@
         if (present('Tout cocher')) stop('Avertissement sur le récapitulatif : vérifie puis clique Sécurisation');
         if (lireRecap(document.body.innerText).total === '0,00 €') stop('Total facture à 0 € : cotation non ajoutée');
         await suivant(/^Sécurisation/, false); // la page Sécurisation est vérifiée juste après
-        const valider = await attendre(() => plusBas(chercher(RE_VALIDER)), 15000);
+        // Selon l'écran, Stellair demande une validation ou sécurise directement (fenêtre « Feuille de soins terminée »).
+        const valider = await attendre(() => present(FIN) || plusBas(chercher(RE_VALIDER)), 15000);
         if (!valider) stop('Page Sécurisation : bouton de validation non reconnu, valide à la main');
-        cliquer(cliquable(valider));
+        if (valider !== true) cliquer(cliquable(valider));
         noter({ validee: true });
         if (cotation().snp) fixerSnp(snp() + 1);
-        terminer('FSE validée ✔');
+      },
+    },
+    {
+      // Fenêtre « Feuille de soins terminée » : règlement CB s'il reste à payer, sinon OK (ALD, C2S…).
+      nom: 'fin',
+      detecte: () => present(FIN),
+      action: async () => {
+        await pause(300);
+        if (cb > 0) return cliquer(cliquable(plusBas(chercher(/^Ajouter un règlement/)) || stop('« Ajouter un règlement » introuvable')));
+        const ok = plusBas(chercher('OK'));
+        if (!ok) stop('Bouton OK introuvable');
+        cliquer(cliquable(ok));
+        terminer('FSE validée ✔, rien à payer');
+      },
+    },
+    {
+      nom: 'règlement',
+      detecte: () => present(/^Reste à payer patient/) && present('Enregistrer'),
+      action: async () => {
+        await pause(300);
+        if (!choisirCarte()) stop('Choisis « Carte bancaire » puis Enregistrer');
+        cliquer(cliquable(plusBas(chercher('Enregistrer'))));
+        noter({ reglement: 'Règlement CB enregistré dans Stellair' });
+        terminer('FSE validée ✔, règlement CB enregistré');
+        await encaisser(); // le Solo affiche le montant ; si le patient paie autrement, annule sur le Solo
       },
     },
   ];
+
+  const FIN = 'Feuille de soins terminée';
+  // Type de règlement : liste native (select) ou menu Stellair déjà sur « Carte bancaire ».
+  function choisirCarte() {
+    for (const liste of document.querySelectorAll('select')) {
+      const opt = [...liste.options].find((o) => norm(o.textContent) === 'Carte bancaire');
+      if (!opt || !visible(liste)) continue;
+      if (!opt.selected) {
+        liste.value = opt.value;
+        liste.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      return true;
+    }
+    return present('Carte bancaire');
+  }
 
   function demarrer(c) {
     if (c.snp && snp() >= SNP_MAX_SEMAINE &&
@@ -355,7 +395,7 @@
     if (!panneau.isConnected) document.body.appendChild(panneau);
     surveillerRecap();
     if (!flux || occupe) return;
-    if (Date.now() - flux.debut > DUREE_MAX_MS) return terminer('Temps dépassé, arrêt');
+    if (Date.now() - flux.debut > DUREE_MAX_MS) return terminer(resume.validee ? 'FSE validée ✔ (fin à faire à la main)' : 'Temps dépassé, arrêt');
     const etape = ETAPES.find((e) => !flux.faits.includes(e.nom) && e.detecte());
     if (!etape) return;
     occupe = true;
@@ -469,7 +509,7 @@
       r.style.cssText = 'font-size:11px;color:#333;border-top:1px solid #ddd;padding-top:4px;white-space:pre-line';
       r.textContent = ['Dernière FSE :', resume.cotation, resume.ald && 'ALD', resume.mode,
         `Total ${resume.total} (AMO ${resume.amo}, AMC ${resume.amc})`, `Patient ${resume.patient}`,
-        resume.validee ? '✔ validée' : 'non validée par le script', resume.paiement].filter(Boolean).join('\n');
+        resume.validee ? '✔ validée' : 'non validée par le script', resume.reglement, resume.paiement].filter(Boolean).join('\n');
       panneau.append(r);
     }
     if (message) {
