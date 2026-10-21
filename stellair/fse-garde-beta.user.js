@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         Stellair FSE garde (bêta)
 // @namespace    saisie-rapide-garde
-// @version      0.1
+// @version      0.2
 // @description  Mode de garde (consult / visite, PDS auto) : cotation prédite en un bouton, options SNP et IK, carte Vitale, ALD, validation, règlement et SumUp Solo
 // @match        https://fse.stellair.fr/*
+// @match        https://somenor.net/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_addValueChangeListener
 // @connect      api.sumup.com
 // @updateURL    https://raw.githubusercontent.com/asayet44/test/main/stellair/fse-garde-beta.user.js
 // @downloadURL  https://raw.githubusercontent.com/asayet44/test/main/stellair/fse-garde-beta.user.js
@@ -14,6 +16,35 @@
 
 (function () {
   'use strict';
+
+  // ---------- côté Somelog : au clic sur le lien « Stellair », on mémorise la cotation du dossier ----------
+  if (location.hostname === 'somenor.net') {
+    const txt = (el) => (el.textContent || '').normalize('NFC').replace(/\s+/g, ' ').trim();
+    const champ = (bloc, libelle) => { // champ numérique à côté d'un libellé (IK, ESP, CB…)
+      const lab = [...bloc.querySelectorAll('*')].find((el) => txt(el) === libelle && !el.children.length);
+      for (let p = lab && lab.parentElement; p && p !== bloc; p = p.parentElement) {
+        const inp = p.querySelector('input');
+        if (inp) return parseFloat((inp.value || '').replace(',', '.')) || 0;
+      }
+      return 0;
+    };
+    document.addEventListener('click', (ev) => {
+      const lien = ev.target.closest && ev.target.closest('a');
+      if (!lien || txt(lien) !== 'Stellair') return;
+      let bloc = lien.parentElement;
+      while (bloc && !/Comptabilit/.test(bloc.textContent)) bloc = bloc.parentElement;
+      if (!bloc) return;
+      // Lignes d'actes : « VG {30} », « MVR (SAS) {10} »…
+      const codes = [...bloc.querySelectorAll('*')].map(txt).map((t) => t.match(/^([A-Z0-9]+)(?:\s*\([^)]*\))?\s*\{[\d.,]+\}$/))
+        .filter(Boolean).map((m) => m[1]);
+      const paiement = { ESP: 'especes', CHQ: 'cheque', CB: 'cb' };
+      GM_setValue('somelog', {
+        codes: [...new Set(codes)], ik: champ(bloc, 'IK'), t: Date.now(),
+        paiement: Object.keys(paiement).filter((k) => champ(bloc, k) > 0).map((k) => paiement[k])[0] || null,
+      });
+    }, true);
+    return;
+  }
 
   // Favoris Stellair : nom de la ligne en gras de l'onglet Favoris (texte exact ou début du nom).
   const FAV = { consult: 'Consult', ecg: /^ECG consult/i, snp: 'SNP', visiteHorsPDS: /^Visite ho/i, visitePDS: /^Visite PDS/i };
@@ -56,6 +87,34 @@
     return pdsActive() ? [{ nom: 'VG', favoris: [FAV.visitePDS] }] : [{ nom: 'VG + MVR', favoris: [FAV.visiteHorsPDS] }];
   }
   let optSnp = false, optIk = false; // options de la prochaine FSE
+
+  // ---------- cotation reprise de Somelog (lien « Stellair ») ----------
+  const SOMELOG_VALIDITE_MS = 15 * 60 * 1000;
+  const MAJ_AUTO = ['MD', 'MDN', 'MDI', 'MDD', 'MM', 'MN', 'F', 'CRN', 'CRD', 'CRS']; // ajoutées par Stellair
+  const propositionSomelog = () => analyserSomelog(GM_getValue('somelog', null));
+  function analyserSomelog(l) {
+    if (!l || Date.now() - l.t > SOMELOG_VALIDITE_MS) return null;
+    const codes = new Set(l.codes);
+    let base = null;
+    if (codes.has('VG')) base = codes.has('MVR') ? { nom: 'VG + MVR', favoris: [FAV.visiteHorsPDS] } : { nom: 'VG', favoris: [FAV.visitePDS] };
+    else if (codes.has('G')) base = codes.has('DEQP003') ? { nom: 'G + ECG', favoris: [FAV.consult, FAV.ecg] } : { nom: 'G', favoris: [FAV.consult] };
+    const autres = l.codes.filter((c) => !['VG', 'MVR', 'G', 'DEQP003', 'SNP', ...MAJ_AUTO].includes(c));
+    return { ...l, base: autres.length ? null : base, autres, snp: codes.has('SNP'), minutes: Math.round((Date.now() - l.t) / 60000) };
+  }
+  console.assert(analyserSomelog({ codes: ['MD', 'MVR', 'SNP', 'VG'], ik: 0, t: Date.now() }).base.nom === 'VG + MVR' &&
+    analyserSomelog({ codes: ['MD', 'VG'], ik: 2, t: Date.now() }).base.nom === 'VG' &&
+    analyserSomelog({ codes: ['G', 'QZJA002'], ik: 0, t: Date.now() }).base === null &&
+    analyserSomelog({ codes: ['VG'], ik: 0, t: Date.now() - 3600000 }) === null);
+  function facturerSomelog(prop) {
+    optSnp = prop.snp;
+    optIk = prop.ik > 0;
+    demarrer(prop.base);
+    if (!flux) return; // SNP refusé
+    flux.paiementPrevu = prop.paiement;
+    sauver();
+    GM_setValue('somelog', null); // une lecture ne sert qu'une fois
+  }
+  GM_addValueChangeListener('somelog', () => dessiner());
   const SNP_MAX_SEMAINE = 15;
   const ATTENTE_ALD_MS = 5000; // temps laissé aux droits en ligne (ADRi) pour afficher la bulle ALD
   const DUREE_MAX_MS = 3 * 60 * 1000; // lecture carte + choix du bénéficiaire compris
@@ -380,6 +439,7 @@
       detecte: () => finVisible(),
       action: async () => {
         await pause(300);
+        if (cb > 0 && flux.paiementPrevu) return choisirMode(flux.paiementPrevu); // mode déjà saisi dans Somelog
         if (cb > 0) {
           flux.attente = true; // le déroulé reprend au clic sur un mode de paiement (choisirMode)
           sauver();
@@ -577,6 +637,20 @@
       }
       panneau.append(bouton('Plus tard', 'padding:4px;border:1px solid #999;border-radius:8px;background:#fff;color:#333;cursor:pointer',
         () => choisirMode('plus tard')));
+    }
+    const prop = !flux && propositionSomelog();
+    if (prop) {
+      const cadre = document.createElement('div');
+      cadre.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:6px;border:1px solid #2a9d5c;border-radius:8px;background:#eef8f1;font-size:12px;color:#1d4d30';
+      const lib = prop.base ? prop.base.nom + (prop.snp ? ' + SNP' : '') : prop.codes.join(' + ');
+      cadre.append(`Somelog (${prop.minutes} min) :`, document.createElement('br'));
+      const l2 = document.createElement('b');
+      l2.textContent = lib + (prop.ik ? ` · IK ${prop.ik}` : '') + (prop.paiement ? ` · ${MODES[prop.paiement].nom}` : '');
+      cadre.append(l2);
+      if (prop.base) cadre.append(bouton('Facturer ça', 'padding:10px 4px;border:0;border-radius:8px;background:#2a9d5c;color:#fff;font-weight:bold;cursor:pointer', () => facturerSomelog(prop)));
+      else cadre.append(`Non géré (${prop.autres.join(', ') || 'cotation inconnue'}) : à la main`);
+      cadre.append(bouton('Ignorer', 'padding:2px;border:0;background:none;color:#666;font-size:11px;cursor:pointer', () => GM_setValue('somelog', null)));
+      panneau.append(cadre);
     }
     if (flux && flux.pauseIK) {
       panneau.append(bouton('▶ Continuer', 'padding:10px;border:0;border-radius:8px;background:#2a9d5c;color:#fff;font-weight:bold;cursor:pointer', continuerIK));
