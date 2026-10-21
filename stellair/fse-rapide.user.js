@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.14
+// @version      0.15
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -29,14 +29,14 @@
   const CLE_FLUX = 'stellair-flux';
   const CLE_SNP = 'stellair-snp';
 
-  const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const norm = (s) => (s || '').normalize('NFC').replace(/\s+/g, ' ').trim();
   const visible = (el) => el.getClientRects().length > 0;
   const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // Éléments visibles dont le texte correspond (le plus profond seulement), hors de notre panneau.
   function chercher(texte) {
     const ok = texte instanceof RegExp ? (t) => texte.test(t) : (t) => t === texte;
-    return [...document.body.querySelectorAll('*')].filter((el) =>
+    return [...document.documentElement.querySelectorAll('*')].filter((el) =>
       !el.closest('#sfr-panneau') && ok(norm(el.textContent)) && visible(el) &&
       ![...el.children].some((c) => ok(norm(c.textContent))));
   }
@@ -326,7 +326,7 @@
         if (lireRecap(document.body.innerText).total === '0,00 €') stop('Total facture à 0 € : cotation non ajoutée');
         await suivant(/^Sécurisation/, false); // la page Sécurisation est vérifiée juste après
         // Selon l'écran, Stellair demande une validation ou sécurise directement (fenêtre « Feuille de soins terminée »).
-        const valider = await attendre(() => present(FIN) || plusBas(chercher(RE_VALIDER)), 45000); // téléphone : sécurisation lente
+        const valider = await attendre(() => finVisible() || plusBas(chercher(RE_VALIDER)), 45000); // téléphone : sécurisation lente
         if (!valider) stop('Page Sécurisation : bouton de validation non reconnu, valide à la main');
         if (valider !== true) cliquer(cliquable(valider));
         noter({ validee: true });
@@ -336,7 +336,7 @@
     {
       // Fenêtre « Feuille de soins terminée » : règlement CB s'il reste à payer, sinon OK (ALD, C2S…).
       nom: 'fin',
-      detecte: () => present(FIN),
+      detecte: () => finVisible(),
       action: async () => {
         await pause(300);
         if (cb > 0) return cliquer(cliquable(plusBas(chercher(/^Ajouter un règlement/)) || stop('« Ajouter un règlement » introuvable')));
@@ -360,7 +360,9 @@
     },
   ];
 
-  const FIN = /^(Feuille de soins terminée|Votre facture a été sécurisée)/;
+  // Lu sur le texte affiché de toute la page (insensible à la casse et à la structure de la fenêtre).
+  const finVisible = () => /Feuille de soins terminée|facture a été sécurisée/i
+    .test(document.documentElement.innerText.normalize('NFC'));
   // Type de règlement : liste native (select) ou menu Stellair déjà sur « Carte bancaire ».
   function choisirCarte() {
     for (const liste of document.querySelectorAll('select')) {
