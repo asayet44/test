@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      1.3
+// @version      1.4
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -115,7 +115,11 @@
       overflow-y: auto; padding: 8px; border-radius: 16px; background: rgba(255,255,255,.92);
       box-shadow: 0 4px 14px rgba(0,0,0,.25);
       transition: opacity .18s ease, transform .18s ease; transform-origin: bottom right; }
-    #sr-beta .panneau.cache { opacity: 0; transform: translateY(8px) scale(.97); pointer-events: none; }
+    #sr-beta .panneau.cache { opacity: 0; transform: translateY(8px) scale(.97); }
+    /* La zone invisible autour des boutons laisse passer les touchers vers PAS */
+    #sr-beta { pointer-events: none; }
+    #sr-beta button, #sr-beta .panneau { pointer-events: auto; }
+    #sr-beta .panneau.cache, #sr-beta .panneau.cache button { pointer-events: none; }
   `;
 
   function bouton(texte, classe, action) {
@@ -186,6 +190,13 @@
     if (present && !ui) creerInterface();
     else if (!present && ui) ui.remove();
   }
-  new MutationObserver(ensureButton).observe(document.documentElement, { childList: true, subtree: true });
+  // Une seule vérification par image affichée, pas à chaque petite modification de la page
+  let prevu = false;
+  const planifier = () => {
+    if (prevu) return;
+    prevu = true;
+    requestAnimationFrame(() => { prevu = false; ensureButton(); });
+  };
+  new MutationObserver(planifier).observe(document.documentElement, { childList: true, subtree: true });
   ensureButton();
 })();
