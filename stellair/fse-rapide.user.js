@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.6
+// @version      0.7
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -98,10 +98,32 @@
     try { sessionStorage.setItem(CLE_CB, String(m)); } catch (e) { /* stockage bloqué */ }
     dessiner();
   }
+  // ---------- résumé de la dernière FSE ----------
+  const CLE_RESUME = 'stellair-resume';
+  let resume = {};
+  try { resume = JSON.parse(sessionStorage.getItem(CLE_RESUME)) || {}; } catch (e) { /* rien */ }
+  function noter(champs, neuf = false) {
+    resume = { ...(neuf ? {} : resume), ...champs };
+    try { sessionStorage.setItem(CLE_RESUME, JSON.stringify(resume)); } catch (e) { /* stockage bloqué */ }
+    dessiner();
+  }
+  const euros = (texte, libelle) => {
+    const m = texte.match(new RegExp(libelle + '\\s*([\\d.,]+)\\s*€'));
+    return m ? m[1].replace('.', ',') + ' €' : '?';
+  };
+  function lireRecap(texte) {
+    return {
+      mode: norm((texte.match(/Facturation - ([^\n]+)/) || [])[1]),
+      total: euros(texte, 'Total facture'), amo: euros(texte, 'Part AMO'), amc: euros(texte, 'Part AMC'),
+      patient: euros(texte, 'À payer par le patient'),
+    };
+  }
+  console.assert(lireRecap('Facturation - Tiers payant AMO\nTotal facture\n30.00 €\nPart AMO\n21.00 €').amo === '21,00 €');
+
   let surRecap = false;
   function surveillerRecap() {
     const m = montantPatient(document.body.innerText);
-    if (m !== null && !surRecap) fixerCb(m); // une seule capture par passage, pour ne pas faire réapparaître un bouton déjà payé
+    if (m !== null && !surRecap) { noter(lireRecap(document.body.innerText), !flux); fixerCb(m); } // une seule capture par passage, pour ne pas faire réapparaître un bouton déjà payé
     surRecap = m !== null;
   }
 
@@ -167,6 +189,7 @@
         affiliate: { app_id: GM_getValue('appId'), key: GM_getValue('cleAffiliee'), foreign_transaction_id: 'stellair-' + Date.now() },
       });
       const envoye = cb;
+      noter({ paiement: `💳 CB ${envoye.toFixed(2).replace('.', ',')} € envoyé au Solo` });
       fixerCb(0);
       afficher(`💳 ${envoye.toFixed(2)} € envoyé au Solo`);
     } catch (e) {
@@ -230,6 +253,7 @@
           const ald = plusBas(options());
           cliquer(ald.closest('label') || ald.parentElement.querySelector('input[type="radio"], [role="radio"]') || ald);
           afficher('ALD cochée');
+          noter({ ald: true });
           await pause(300);
         }
         suivant();
@@ -271,6 +295,7 @@
         const valider = await attendre(() => plusBas(chercher(RE_VALIDER)), 15000);
         if (!valider) stop('Page Sécurisation : bouton de validation non reconnu, valide à la main');
         cliquer(cliquable(valider));
+        noter({ validee: true });
         if (cotation().snp) fixerSnp(snp() + 1);
         terminer('FSE validée ✔');
       },
@@ -281,6 +306,7 @@
     if (c.snp && snp() >= SNP_MAX_SEMAINE &&
         !confirm(`Déjà ${snp()} SNP cette semaine (max ${SNP_MAX_SEMAINE}). Continuer quand même ?`)) return;
     flux = { cotation: c.nom, debut: Date.now(), faits: [] };
+    noter({ cotation: c.nom }, true);
     sauver();
     afficher(`${c.nom} : en cours…`);
   }
@@ -364,7 +390,7 @@
       const oubli = document.createElement('button');
       oubli.textContent = 'Pas de CB';
       oubli.style.cssText = 'padding:2px;border:0;background:none;color:#666;font-size:11px;cursor:pointer';
-      oubli.onclick = () => fixerCb(0);
+      oubli.onclick = () => { noter({ paiement: 'Pas de CB (autre mode)' }); fixerCb(0); };
       panneau.append(carte, oubli);
     }
     if (flux) {
@@ -373,6 +399,14 @@
       arret.style.cssText = 'padding:4px;border:1px solid #c33;border-radius:8px;background:#fff;color:#c33;cursor:pointer';
       arret.onclick = () => terminer('Arrêté');
       panneau.append(arret);
+    }
+    if (resume.total) {
+      const r = document.createElement('div');
+      r.style.cssText = 'font-size:11px;color:#333;border-top:1px solid #ddd;padding-top:4px;white-space:pre-line';
+      r.textContent = ['Dernière FSE :', resume.cotation, resume.ald && 'ALD', resume.mode,
+        `Total ${resume.total} (AMO ${resume.amo}, AMC ${resume.amc})`, `Patient ${resume.patient}`,
+        resume.validee ? '✔ validée' : 'non validée par le script', resume.paiement].filter(Boolean).join('\n');
+      panneau.append(r);
     }
     if (message) {
       const m = document.createElement('div');
