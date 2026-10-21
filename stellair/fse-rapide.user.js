@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.9
+// @version      0.10
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -59,10 +59,25 @@
     }
   }
 
-  function suivant(re = /^Suivant/) {
-    const el = plusBas(chercher(re));
-    if (!el) stop('Bouton « Suivant » introuvable');
-    cliquer(cliquable(el));
+  // Sur téléphone, Stellair met parfois du temps à recalculer : bouton grisé ou clic ignoré.
+  // On attend qu'il soit cliquable, puis on vérifie que la page a bien changé, sinon on reclique.
+  let etapeEnCours = null;
+  // Page changée = le repère de l'étape a disparu, ou une étape suivante est déjà reconnue.
+  const pageChangee = () => !etapeEnCours.detecte() ||
+    ETAPES.some((e) => e !== etapeEnCours && !flux.faits.includes(e.nom) && e.detecte());
+  async function suivant(re = /^Suivant/, verifier = true) {
+    for (let essai = 0; essai < 4; essai++) {
+      const bouton = await attendre(() => {
+        const el = plusBas(chercher(re));
+        const b = el && cliquable(el);
+        return b && !b.disabled && b.getAttribute('aria-disabled') !== 'true' ? b : null;
+      }, 8000);
+      if (!bouton) stop('Bouton « Suivant » introuvable ou grisé');
+      cliquer(bouton);
+      if (!verifier || !etapeEnCours || await attendre(pageChangee, 5000)) return;
+      afficher(`${flux.cotation} : ${etapeEnCours.nom}, nouvel essai…`);
+    }
+    stop('La page ne passe pas à la suite : clique Suivant à la main');
   }
 
   // Le « + » est le dernier bouton situé avant le nom du favori, dans la même ligne.
@@ -264,13 +279,13 @@
           noter({ ald: true });
           await pause(300);
         }
-        suivant();
+        await suivant();
       },
     },
     {
       nom: 'parcours',
       detecte: () => present('Contexte du parcours de soins'),
-      action: async () => { await pause(300); suivant(); },
+      action: async () => { await pause(300); await suivant(); },
     },
     {
       nom: 'actes',
@@ -284,13 +299,13 @@
           await pause(600);
         }
         if (!(await attendre(() => totalActes() > 0, 5000))) stop('Total actes à 0 : cotation non ajoutée');
-        suivant();
+        await suivant();
       },
     },
     {
       nom: 'mutuelle',
       detecte: () => present('Informations de la mutuelle'),
-      action: async () => { await pause(300); suivant(); },
+      action: async () => { await pause(300); await suivant(); },
     },
     {
       nom: 'récapitulatif',
@@ -299,7 +314,7 @@
         await pause(300);
         // Avertissement (ex. acte déjà facturé aujourd'hui) : c'est au médecin de décider.
         if (present('Tout cocher')) stop('Avertissement sur le récapitulatif : vérifie puis clique Sécurisation');
-        suivant(/^Sécurisation/);
+        await suivant(/^Sécurisation/, false); // la page Sécurisation est vérifiée juste après
         const valider = await attendre(() => plusBas(chercher(RE_VALIDER)), 15000);
         if (!valider) stop('Page Sécurisation : bouton de validation non reconnu, valide à la main');
         cliquer(cliquable(valider));
@@ -338,6 +353,7 @@
     sauver();
     afficher(`${flux.cotation} : ${etape.nom}…`);
     try {
+      etapeEnCours = etape;
       await etape.action();
     } catch (e) {
       terminer(e instanceof Arret ? '⚠ ' + e.message : 'Erreur : ' + e.message);
