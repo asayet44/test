@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      3.1
+// @version      3.2
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -170,21 +170,37 @@
     return true;
   }
 
-  // Remonte depuis un libellé jusqu'au premier bloc qui contient le sélecteur voulu
-  function pres(libelle, selecteur) {
+  const feuille = (racine, t) => [...racine.querySelectorAll('*')].find(
+    (e) => e.children.length === 0 && e.textContent.trim() === t && !e.closest('#sr-beta')
+  );
+
+  // Remonte depuis un libellé jusqu'au premier bloc qui satisfait le test
+  function remonter(libelle, test) {
     let el = texteExact(libelle);
-    while (el && !el.querySelector(selecteur)) el = el.parentElement;
-    return el ? el.querySelector(selecteur) && el : null;
+    while (el && !test(el)) el = el.parentElement;
+    return el;
   }
 
-  function radioHospitNon() {
-    const bloc = pres('Hospitalisation', 'input[type=radio]');
+  // Hospitalisation NON : vrai bouton radio si possible, sinon le texte « NON » cliquable
+  function hospitNon() {
+    const bloc = remonter('Hospitalisation', (b) => b.querySelector('input[type=radio]') || feuille(b, 'NON'));
     if (!bloc) return null;
     const radios = [...bloc.querySelectorAll('input[type=radio]')];
     return radios.find((r) => /^non$/i.test(r.value))
       || radios.find((r) => /\bNON\b/.test(r.closest('label')?.textContent || ''))
-      || radios[1]; // ordre affiché : OUI puis NON
+      || radios[1] // ordre affiché : OUI puis NON
+      || feuille(bloc, 'NON');
   }
+
+  // Case de paiement : d'après son libellé (TP, CB), sinon d'après son nom ou id technique
+  function casePaiement(lib) {
+    const bloc = remonter(lib, (b) => b.querySelector('input'));
+    if (bloc) return bloc.querySelector('input');
+    const motif = new RegExp(`(^|[^a-z])${lib}([^a-z]|$)`, 'i');
+    return [...document.querySelectorAll('input')].find((i) => motif.test(i.name) || motif.test(i.id));
+  }
+
+  const elementsFacturation = () => ({ non: hospitNon(), tp: casePaiement('TP'), cb: casePaiement('CB') });
 
   // Comme un toucher dans la case : PAS calcule alors le montant (TP = part AMO, CB = reste)
   function toucher(el) {
@@ -192,13 +208,9 @@
     el.click();
   }
 
-  // Hospitalisation NON, puis toucher TP, puis CB. fin(ok) : ok = false si un élément manque
-  function facturer(fin) {
-    const non = radioHospitNon();
+  function appliquerFacturation({ non, tp, cb }, fin) {
     if (non && !non.checked) non.click();
-    const tp = pres('TP', 'input')?.querySelector('input');
-    const cb = pres('CB', 'input')?.querySelector('input');
-    if (!tp || !cb) console.warn('[Examens β] introuvable :', !non ? 'Hospitalisation' : '', !tp ? 'TP' : '', !cb ? 'CB' : '');
+    if (!(non && tp && cb)) console.warn('[Examens β] introuvable :', !non ? 'Hospitalisation' : '', !tp ? 'TP' : '', !cb ? 'CB' : '');
     setTimeout(() => {
       if (tp) toucher(tp);
       setTimeout(() => {
@@ -206,6 +218,70 @@
         fin(!!(non && tp && cb));
       }, 250);
     }, 250);
+  }
+
+  // Cherche Hospitalisation / TP / CB dans l'onglet affiché, puis dans CAT, EXAM, ATCD
+  function facturer(fin) {
+    const essayer = (onglets) => {
+      const f = elementsFacturation();
+      if ((f.non && f.tp && f.cb) || !onglets.length) return appliquerFacturation(f, fin);
+      surOnglet(onglets[0], () => essayer(onglets.slice(1)));
+    };
+    essayer(['CAT', 'EXAM', 'ATCD']);
+  }
+
+  /* ===== Rapport de structure pour mise au point =====
+     shortcut: outil temporaire, à retirer une fois la facturation fiable sur PAS */
+  function decrire(el) {
+    if (!el) return 'introuvable';
+    const attrs = [...el.attributes].filter((a) => a.name !== 'value' && a.name !== 'style').map((a) => `${a.name}="${a.value.slice(0, 40)}"`);
+    return `<${el.tagName.toLowerCase()} ${attrs.join(' ')}>`;
+  }
+  function chaine(el, n = 6) {
+    const out = [];
+    for (let e = el; e && n--; e = e.parentElement) out.push(decrire(e));
+    return out.join(' ⟵ ');
+  }
+  function rapportOnglet(nom) {
+    const h = texteExact('Hospitalisation');
+    const bloc = h && h.parentElement?.parentElement?.parentElement;
+    let html = '';
+    if (bloc) {
+      // Copie anonymisée : seuls les libellés connus restent lisibles, tout autre texte devient « … »
+      const copie = bloc.cloneNode(true);
+      copie.querySelectorAll('#sr-beta, script, style, svg').forEach((e) => e.remove());
+      const garder = /^(Hospitalisation|OUI|NON|Comptabilité|Remise|NGAP|CCAM|LOCAL|TP|CB|ESP|CHQ|VIR|AMO|AMC|Total.*|\d+%)$/;
+      const w = document.createTreeWalker(copie, NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(); n; n = w.nextNode()) if (n.textContent.trim() && !garder.test(n.textContent.trim())) n.textContent = '…';
+      copie.querySelectorAll('[value]').forEach((e) => e.removeAttribute('value'));
+      html = copie.outerHTML.replace(/\s+/g, ' ').slice(0, 3000);
+    }
+    const radios = [...document.querySelectorAll('input[type=radio]')].map((r) => `${decrire(r)} coché=${r.checked}`);
+    return [
+      `=== Onglet ${nom} ===`,
+      `Hospitalisation : ${h ? chaine(h) : 'introuvable'}`,
+      `NON : ${chaine(texteExact('NON'), 3)}`,
+      `Radios (${radios.length}) : ${radios.slice(0, 8).join(' | ')}`,
+      `TP : ${chaine(texteExact('TP'), 4)}`,
+      `CB : ${chaine(texteExact('CB'), 4)}`,
+      `Trouvé par le script : ${JSON.stringify(Object.fromEntries(Object.entries(elementsFacturation()).map(([k, v]) => [k, decrire(v)])))}`,
+      `HTML autour de Hospitalisation : ${html}`,
+    ].join('\n');
+  }
+  function rapport() {
+    const parties = [];
+    const suite = (onglets) => {
+      if (!onglets.length) return copier(parties.join('\n\n'));
+      surOnglet(onglets[0], () => { parties.push(rapportOnglet(onglets[0])); suite(onglets.slice(1)); });
+    };
+    suite(['EXAM', 'CAT']);
+  }
+  function copier(texte) {
+    const manuel = () => prompt('Copie ce rapport et colle-le à Claude :', texte);
+    if (!navigator.clipboard) return manuel();
+    navigator.clipboard.writeText(texte)
+      .then(() => alert('Rapport copié : colle-le dans la conversation avec Claude.'))
+      .catch(manuel);
   }
 
   // Vert si tout a été trouvé, rouge sinon (détail dans la console F12)
@@ -340,7 +416,8 @@
 
       // Dans CAT : facturation en un appui
       const actions = ex.onglet === 'CAT'
-        ? [bouton('💳 Hospit. NON + TP + CB', 'action', (e) => surOngletExam(() => facturer((ok) => resultat(e.target, ok))))]
+        ? [bouton('💳 Hospit. NON + TP + CB', 'action', (e) => surOngletExam(() => facturer((ok) => resultat(e.target, ok)))),
+          bouton('🔍 Rapport de mise au point', 'action', rapport)]
         : [];
 
       panneau.replaceChildren(nav, ...actions, tout, ...morceaux);
