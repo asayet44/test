@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      2.0
+// @version      3.0
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -32,6 +32,15 @@
     { nom: 'Oeil', texte: 'Orgelet simple sans signe de gravité. Chalazion simple sans signe de gravité. Pas de BAV. Pas de lésion cornée. Pas de rougeur.' },
     // morceaux : liste donnée telle quelle, quand une virgule ne doit pas couper le bouton en deux
     { nom: 'Uro', morceaux: ['Cystite simple sans signe de gravité.', ['BU normale.', 'BU leucocytes, nitrite et sang +.'], 'Pas de douleur à l\'ébranlement lombaire.', ['Pas de SFU.', 'SFU +.']] },
+  ];
+
+  /* ===== ALL IN : un seul appui = constantes + examen (onglet EXAM) + CAT (onglet CAT) ===== */
+  const MACROS = [
+    {
+      nom: '⚡ Syndrome viral',
+      examen: 'Syndrome viral sans signe de gravité. Bon état général. Pas de signe de surinfection. Pas de trouble de l\'alimentation. Pas de signe de déshydratation.',
+      cat: 'Traitement symptomatique. Consigne d\'urgence donnée et comprise par le patient.',
+    },
   ];
 
   const LIMITE = 1500;
@@ -128,35 +137,71 @@
     setValue(champ, v);
   }
 
-  /* ===== Style : animations douces et réponse immédiate au toucher ===== */
+  /* ===== Constantes aléatoires (pour ALL IN) =====
+     shortcut: copie de la génération du script « Constantes aléatoires », à modifier dans les deux */
+  const entier = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+
+  function remplirConstantes() {
+    const parPh = (ph) => [...document.querySelectorAll('input')].filter((i) => (i.placeholder || '').trim() === ph);
+    const mmhg = parPh('mmHg');
+    const champs = [mmhg[0], mmhg[1], parPh('bpm')[0], parPh('%')[0], parPh('°C')[0]];
+    const pas = entier(100, 140);
+    const valeurs = [pas, entier(80, Math.min(100, pas - 20)), entier(50, 90), entier(96, 100),
+      (entier(360, 375) / 10).toFixed(1).replace('.', ',')];
+    // ne remplace jamais une valeur déjà saisie (une vraie mesure reste intacte)
+    champs.forEach((c, i) => { if (c && !c.value) setValue(c, String(valeurs[i])); });
+  }
+
+  // Morceaux d'un texte pas encore présents dans le Commentaire (un 2e appui n'écrit rien en double)
+  const manquants = (texte) => decouper(texte).filter((m) => !estPresent(m)).join(' ');
+
+  function executerMacro(m, b) {
+    surOnglet('EXAM', () => {
+      remplirConstantes();
+      const ex = manquants(m.examen);
+      if (ex) inserer(ex);
+      surOnglet('CAT', () => {
+        const cat = manquants(m.cat);
+        if (cat) inserer(cat);
+        b.classList.add('fait');
+        setTimeout(() => b.classList.remove('fait'), 900);
+      });
+    });
+  }
+
+  /* ===== Style : discret au repos, réponse immédiate au toucher ===== */
   const css = document.createElement('style');
   css.textContent = `
-    #sr-beta { position: fixed; right: 12px; bottom: 170px; z-index: 99999;
-      display: flex; flex-direction: column; align-items: flex-end; gap: 8px; font-family: sans-serif; }
-    #sr-beta button { touch-action: manipulation; -webkit-tap-highlight-color: transparent;
-      border: none; border-radius: 20px; padding: 10px 14px; font-size: 15px; color: #fff;
-      background: #6b8fd6; box-shadow: 0 2px 6px rgba(0,0,0,.25); cursor: pointer;
-      transition: transform .12s ease, background-color .2s ease, opacity .2s ease; }
-    #sr-beta button:active { transform: scale(.93); }
-    #sr-beta .principal { background: #7a4fd6; font-size: 16px; padding: 12px 16px; }
-    #sr-beta .retour { background: #888; }
-    #sr-beta .tout { background: #2e5fb8; }
-    #sr-beta .fait { background: #2e9e5b; }
-    #sr-beta .retire { background: #d64545; }
-    #sr-beta .inverse { background: #e08a1e; }
-    #sr-beta .nav { display: flex; flex-wrap: wrap; gap: 4px; flex-basis: 100%;
-      padding-bottom: 6px; border-bottom: 1px solid #ccc; }
-    #sr-beta .nav button { font-size: 13px; padding: 6px 10px; background: #888; box-shadow: none; }
-    #sr-beta .nav .courant { background: #7a4fd6; }
-    #sr-beta .panneau { display: flex; flex-wrap: wrap; gap: 6px; max-width: 80vw; max-height: 50vh;
-      overflow-y: auto; padding: 8px; border-radius: 16px; background: rgba(255,255,255,.92);
-      box-shadow: 0 4px 14px rgba(0,0,0,.25);
-      transition: opacity .18s ease, transform .18s ease; transform-origin: bottom right; }
-    #sr-beta .panneau.cache { opacity: 0; transform: translateY(8px) scale(.97); }
-    /* La zone invisible autour des boutons laisse passer les touchers vers PAS */
-    #sr-beta { pointer-events: none; }
-    #sr-beta button, #sr-beta .panneau { pointer-events: auto; }
+    #sr-beta { position: fixed; right: 10px; bottom: 170px; z-index: 99999; pointer-events: none;
+      display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+      font: 14px/1.25 system-ui, sans-serif; }
+    #sr-beta button { pointer-events: auto; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+      border: none; border-radius: 999px; padding: 8px 12px; font: inherit; color: #1d2a3a;
+      background: #eef1f6; cursor: pointer;
+      transition: transform .1s ease, background-color .15s ease, color .15s ease; }
+    #sr-beta button:active { transform: scale(.94); }
+    #sr-beta .principal { width: 46px; height: 46px; padding: 0; font-size: 22px; color: #fff;
+      background: rgba(122, 79, 214, .5); box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+    #sr-beta .principal.ouvert { background: #7a4fd6; }
+    #sr-beta .tout { background: #dfe6f3; font-weight: 600; }
+    #sr-beta .fait { background: #2e9e5b; color: #fff; }
+    #sr-beta .inverse { background: #e08a1e; color: #fff; }
+    #sr-beta .retire { background: #d64545; color: #fff; }
+    #sr-beta .panneau { pointer-events: auto; display: flex; flex-wrap: wrap; gap: 6px;
+      width: min(86vw, 420px); max-height: 48vh; overflow-y: auto; overscroll-behavior: contain;
+      padding: 10px; border-radius: 14px; background: rgba(255,255,255,.97);
+      box-shadow: 0 6px 20px rgba(0,0,0,.18); transform-origin: bottom right; will-change: transform, opacity;
+      transition: opacity .14s ease, transform .14s ease, visibility 0s; }
+    /* fermé : invisible ET intouchable, pour ne jamais gêner PAS */
+    #sr-beta .panneau.cache { opacity: 0; transform: translateY(6px) scale(.98); visibility: hidden;
+      transition: opacity .14s ease, transform .14s ease, visibility 0s .14s; }
     #sr-beta .panneau.cache, #sr-beta .panneau.cache button { pointer-events: none; }
+    #sr-beta .nav { display: flex; gap: 4px; flex: 0 0 100%; overflow-x: auto; scrollbar-width: none;
+      padding-bottom: 8px; border-bottom: 1px solid #e3e6eb; }
+    #sr-beta .nav button { flex: 0 0 auto; font-size: 13px; padding: 6px 10px; background: transparent; color: #556; }
+    #sr-beta .nav .courant { background: #7a4fd6; color: #fff; }
+    #sr-beta .nav .macro { background: #fff1cc; color: #7a5200; }
+    #sr-beta .nav .macro.fait { background: #2e9e5b; color: #fff; }
   `;
 
   function bouton(texte, classe, action) {
@@ -167,18 +212,14 @@
     return b;
   }
 
-  /* ===== Interface ===== */
+  /* ===== Interface : un seul écran = barre des groupes + morceaux du groupe ouvert ===== */
   function creerInterface() {
     document.head.appendChild(css);
     const racine = document.createElement('div');
     racine.id = 'sr-beta';
     const panneau = document.createElement('div');
     panneau.className = 'panneau cache';
-
-    // Écran 1 : la liste des examens
-    function afficherListe() {
-      panneau.replaceChildren(...EXAMENS.map((ex) => bouton(ex.nom, '', () => afficherExamen(ex))));
-    }
+    let courant = EXAMENS[0]; // le panneau se rouvre sur le dernier groupe utilisé
 
     // Rouge un instant pour montrer la suppression, puis retour à la couleur normale
     function flashRouge(boutons) {
@@ -186,9 +227,9 @@
       setTimeout(() => boutons.forEach((b) => b.classList.remove('retire')), 600);
     }
 
-    // Écran 2 : les morceaux d'un examen.
     //   gris = pas écrit · vert = texte par défaut écrit · orange = inverse écrit
     function afficherExamen(ex) {
+      courant = ex;
       const surOngletExam = (action) => surOnglet(ex.onglet || 'EXAM', action);
       const paires = (ex.morceaux || decouper(ex.texte)).map(paire);
       const etat = ([def, inv]) => (estPresent(def) ? 'fait' : inv && estPresent(inv) ? 'inverse' : '');
@@ -226,19 +267,38 @@
         tout.classList.toggle('fait', paires.every((p) => etat(p)));
       }
 
-      // Barre des groupes : on passe d'un groupe à l'autre sans revenir en arrière
+      // Barre défilante : ALL IN d'abord, puis les groupes
       const nav = document.createElement('div');
       nav.className = 'nav';
-      nav.append(...EXAMENS.map((g) => bouton(g.nom, g === ex ? 'courant' : '', () => afficherExamen(g))));
+      nav.append(
+        ...MACROS.map((m) => { const b = bouton(m.nom, 'macro', () => executerMacro(m, b)); return b; }),
+        ...EXAMENS.map((g) => bouton(g.nom, g === ex ? 'courant' : '', () => afficherExamen(g))),
+      );
 
       panneau.replaceChildren(nav, tout, ...morceaux);
+      const actif = nav.querySelector('.courant');
+      nav.scrollLeft = actif.offsetLeft - 40; // garde le groupe ouvert visible dans la barre
       surOngletExam(rafraichir); // les couleurs se lisent dans le Commentaire du bon onglet
     }
 
-    const principal = bouton('🧪 Examen β', 'principal', () => {
-      if (panneau.classList.toggle('cache')) return;
-      afficherListe(); // on repart toujours de la liste à l'ouverture
+    function fermer() {
+      panneau.classList.add('cache');
+      principal.classList.remove('ouvert');
+    }
+
+    const principal = bouton('🩺', 'principal', () => {
+      if (!panneau.classList.contains('cache')) return fermer();
+      panneau.classList.remove('cache');
+      principal.classList.add('ouvert');
+      afficherExamen(courant);
     });
+    principal.setAttribute('aria-label', 'Examens types');
+
+    // Un toucher ailleurs ferme le panneau (et atteint PAS normalement) ;
+    // les clics simulés par le script sur les onglets (isTrusted = false) sont ignorés
+    document.addEventListener('pointerdown', (e) => {
+      if (e.isTrusted && racine.isConnected && !racine.contains(e.target) && !panneau.classList.contains('cache')) fermer();
+    }, true);
 
     racine.append(panneau, principal);
     document.body.appendChild(racine);
