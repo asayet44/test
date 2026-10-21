@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      1.4
+// @version      1.5
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -26,6 +26,9 @@
     { nom: 'ORL', texte: 'Pas d\'OMA. Pas d\'angine. Pas d\'adénopathie cervicale.' },
     { nom: 'Gastro', texte: 'Tableau évocateur d\'une gastro-entérite simple sans signe de gravité. Pas de signe de déshydratation. Bon état général. Ventre souple dépressible, pas de défense.' },
     { nom: 'Lumbago', texte: 'Lombalgie commune non déficitaire sans signe de gravité. Pas de syndrome de la queue de cheval. Pas de déficit moteur. Pas de déficit sensitif. Lasègue et Léri normaux. ROT L4 S1 normaux.' },
+    { nom: 'Oeil', texte: 'Orgelet simple sans signe de gravité. Chalazion simple sans signe de gravité. Pas de BAV. Pas de lésion cornée. Pas de rougeur.' },
+    // morceaux : liste donnée telle quelle, quand une virgule ne doit pas couper le bouton en deux
+    { nom: 'Uro', morceaux: ['Cystite simple sans signe de gravité.', 'BU normale.', 'BU leucocytes, nitrite et sang +.', 'Pas de douleur à l\'ébranlement lombaire.', 'Pas de SFU.', 'SFU +.'] },
   ];
 
   const LIMITE = 1500;
@@ -153,7 +156,7 @@
     // un appui sur un bouton vert retire le morceau.
     function afficherExamen(ex) {
       const surOngletExam = (action) => surOnglet(ex.onglet || 'EXAM', action);
-      const textes = decouper(ex.texte);
+      const textes = ex.morceaux || decouper(ex.texte);
       const morceaux = textes.map((m) => bouton(m, '', () => surOngletExam(() => {
         if (estPresent(m)) { retirer([m]); flashRouge([b(m)]); } else inserer(m);
         rafraichir();
