@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.3
+// @version      0.4
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -131,24 +131,39 @@
   }
 
   let envoi = false;
-  async function encaisser() {
-    if (envoi || !(cb > 0)) return;
+  const connecte = () => !!GM_getValue('lecteur', '');
+
+  // Bouton rouge du panneau : tous les réglages d'un coup, puis appairage du Solo.
+  async function connecter() {
+    if (envoi) return;
     envoi = true;
     dessiner();
     try {
-      const appId = reglage('appId', 'Identifiant d\'application de la clé affiliée (ex. stellair-fse-rapide) :');
-      const affiliee = reglage('cleAffiliee', 'Clé affiliée SumUp :');
-      let lecteur = GM_getValue('lecteur', '');
-      if (!lecteur) {
-        const code = norm(prompt('Solo déconnecté : saisis le code d\'appairage affiché sur le terminal :') || '');
-        if (!code) throw new Error('appairage annulé');
-        lecteur = (await sumup('/readers', { pairing_code: code, name: 'Cabinet' })).id;
-        GM_setValue('lecteur', lecteur);
-      }
-      await sumup(`/readers/${lecteur}/checkout`, {
+      reglage('cleApi', 'Clé API SumUp (sup_sk_…) :');
+      reglage('codeMarchand', 'Code marchand SumUp (M…) :');
+      reglage('appId', 'Identifiant d\'application de la clé affiliée (ex. stellair-fse-rapide) :');
+      reglage('cleAffiliee', 'Clé affiliée SumUp :');
+      const code = norm(prompt('Sur le Solo : Connexions → API → Connecter, puis saisis le code affiché :') || '');
+      if (!code) throw new Error('appairage annulé');
+      GM_setValue('lecteur', (await sumup('/readers', { pairing_code: code, name: 'Cabinet' })).id);
+      afficher('✔ Solo connecté');
+    } catch (e) {
+      afficher('⚠ Connexion SumUp : ' + e.message);
+    }
+    envoi = false;
+    dessiner();
+  }
+
+  async function encaisser() {
+    if (envoi || !(cb > 0)) return;
+    if (!connecte()) return afficher('⚠ Clique d\'abord sur « Connecter SumUp »');
+    envoi = true;
+    dessiner();
+    try {
+      await sumup(`/readers/${GM_getValue('lecteur')}/checkout`, {
         total_amount: { currency: 'EUR', minor_unit: 2, value: Math.round(cb * 100) },
         description: 'Consultation',
-        affiliate: { app_id: appId, key: affiliee, foreign_transaction_id: 'stellair-' + Date.now() },
+        affiliate: { app_id: GM_getValue('appId'), key: GM_getValue('cleAffiliee'), foreign_transaction_id: 'stellair-' + Date.now() },
       });
       const envoye = cb;
       fixerCb(0);
@@ -330,6 +345,14 @@
       if (n >= 0) fixerSnp(n);
     };
     panneau.append(compteur);
+    if (!connecte()) {
+      const lien = document.createElement('button');
+      lien.textContent = envoi ? 'Connexion…' : 'Connecter SumUp';
+      lien.disabled = envoi;
+      lien.style.cssText = 'padding:6px;border:0;border-radius:8px;background:#c33;color:#fff;font-weight:bold;cursor:pointer';
+      lien.onclick = connecter;
+      panneau.append(lien);
+    }
     if (cb > 0) {
       const carte = document.createElement('button');
       carte.textContent = envoi ? '💳 Envoi…' : `💳 CB ${cb.toFixed(2).replace('.', ',')} €`;
