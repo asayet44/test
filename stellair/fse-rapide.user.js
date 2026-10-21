@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.8
+// @version      0.9
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -141,10 +141,10 @@
     const cle = reglage('cleApi', 'Clé API SumUp (sup_sk_…) :');
     const marchand = reglage('codeMarchand', 'Code marchand SumUp (M…) :');
     return new Promise((ok, ko) => GM_xmlhttpRequest({
-      method: 'POST',
+      method: corps ? 'POST' : 'GET',
       url: `https://api.sumup.com/v0.1/merchants/${marchand}${chemin}`,
       headers: { Authorization: 'Bearer ' + cle, 'Content-Type': 'application/json' },
-      data: JSON.stringify(corps),
+      data: corps && JSON.stringify(corps),
       timeout: 15000,
       onload: (r) => r.status < 300 ? ok(JSON.parse(r.responseText || '{}'))
         : ko(new Error(`SumUp ${r.status} : ${(r.responseText || '').slice(0, 150)}`)),
@@ -166,10 +166,18 @@
       reglage('codeMarchand', 'Code marchand SumUp (M…) :');
       reglage('appId', 'Identifiant d\'application de la clé affiliée (ex. stellair-fse-rapide) :');
       reglage('cleAffiliee', 'Clé affiliée SumUp :');
-      const code = norm(fen().prompt('Sur le Solo : Connexions → API → Connecter, puis saisis le code affiché :') || '');
-      if (!code) throw new Error('appairage annulé');
-      GM_setValue('lecteur', (await sumup('/readers', { pairing_code: code, name: 'Cabinet' })).id);
-      afficher('✔ Solo connecté');
+      // Solo déjà appairé depuis un autre appareil (Mac / téléphone) : on le reprend, pas de nouveau code.
+      const { items = [] } = await sumup('/readers');
+      const deja = items.find((r) => r.status === 'paired');
+      if (deja) {
+        GM_setValue('lecteur', deja.id);
+        afficher(`✔ Solo « ${deja.name} » retrouvé`);
+      } else {
+        const code = norm(fen().prompt('Sur le Solo : Connexions → API → Connecter, puis saisis le code affiché :') || '');
+        if (!code) throw new Error('appairage annulé');
+        GM_setValue('lecteur', (await sumup('/readers', { pairing_code: code, name: 'Cabinet' })).id);
+        afficher('✔ Solo connecté');
+      }
     } catch (e) {
       afficher('⚠ Connexion SumUp : ' + e.message);
     }
