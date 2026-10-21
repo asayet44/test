@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.5
+// @version      0.6
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -19,7 +19,7 @@
   const COTATIONS = [
     { nom: 'G', favoris: ['Consult'] },
     { nom: 'G + SNP', favoris: ['Consult', 'SNP'], snp: true },
-    { nom: 'G + ECG', favoris: ['Consult', /^(ECG|DEQP003)\b/] }, // favori nommé « ECG » ou par son code CCAM
+    { nom: 'G + ECG', favoris: ['Consult', /^ECG consult/i] }, // en visite ce sera « ECG visite » (VG + ECG)
   ];
   const SNP_MAX_SEMAINE = 15;
   const ATTENTE_ALD_MS = 5000; // temps laissé aux droits en ligne (ADRi) pour afficher la bulle ALD
