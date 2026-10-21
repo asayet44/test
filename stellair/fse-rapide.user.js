@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.13
+// @version      0.14
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -326,7 +326,7 @@
         if (lireRecap(document.body.innerText).total === '0,00 €') stop('Total facture à 0 € : cotation non ajoutée');
         await suivant(/^Sécurisation/, false); // la page Sécurisation est vérifiée juste après
         // Selon l'écran, Stellair demande une validation ou sécurise directement (fenêtre « Feuille de soins terminée »).
-        const valider = await attendre(() => present(FIN) || plusBas(chercher(RE_VALIDER)), 15000);
+        const valider = await attendre(() => present(FIN) || plusBas(chercher(RE_VALIDER)), 45000); // téléphone : sécurisation lente
         if (!valider) stop('Page Sécurisation : bouton de validation non reconnu, valide à la main');
         if (valider !== true) cliquer(cliquable(valider));
         noter({ validee: true });
@@ -360,7 +360,7 @@
     },
   ];
 
-  const FIN = 'Feuille de soins terminée';
+  const FIN = /^(Feuille de soins terminée|Votre facture a été sécurisée)/;
   // Type de règlement : liste native (select) ou menu Stellair déjà sur « Carte bancaire ».
   function choisirCarte() {
     for (const liste of document.querySelectorAll('select')) {
