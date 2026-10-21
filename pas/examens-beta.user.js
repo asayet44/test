@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      3.0
+// @version      3.1
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -34,10 +34,13 @@
     { nom: 'Uro', morceaux: ['Cystite simple sans signe de gravité.', ['BU normale.', 'BU leucocytes, nitrite et sang +.'], 'Pas de douleur à l\'ébranlement lombaire.', ['Pas de SFU.', 'SFU +.']] },
   ];
 
-  /* ===== ALL IN : un seul appui = constantes + examen (onglet EXAM) + CAT (onglet CAT) ===== */
+  /* ===== ALL IN : un seul appui = constantes + examen + diagnostic (onglet EXAM)
+     puis CAT + Hospitalisation NON + TP + CB (onglet CAT).
+     diag : texte exact du bouton de diagnostic de PAS à cliquer ===== */
   const MACROS = [
     {
       nom: '⚡ Syndrome viral',
+      diag: 'Rhino-pharyngite virale',
       examen: 'Syndrome viral sans signe de gravité. Bon état général. Pas de signe de surinfection. Pas de trouble de l\'alimentation. Pas de signe de déshydratation.',
       cat: 'Traitement symptomatique. Consigne d\'urgence donnée et comprise par le patient.',
     },
@@ -70,10 +73,13 @@
   }
 
   // Passe sur l'onglet voulu (EXAM ou CAT), puis agit une fois le bon Commentaire affiché
+  // Élément de PAS dont le texte est exactement t (jamais nos propres boutons)
+  const texteExact = (t) => [...document.querySelectorAll('body *')].find(
+    (el) => el.children.length === 0 && el.textContent.trim() === t && !el.closest('#sr-beta')
+  );
+
   function surOnglet(nom, action) {
-    const onglet = [...document.querySelectorAll('body *')].find(
-      (el) => el.children.length === 0 && el.textContent.trim() === nom
-    );
+    const onglet = texteExact(nom);
     if (!onglet) return action();
     onglet.click();
     setTimeout(action, 150);
@@ -155,16 +161,71 @@
   // Morceaux d'un texte pas encore présents dans le Commentaire (un 2e appui n'écrit rien en double)
   const manquants = (texte) => decouper(texte).filter((m) => !estPresent(m)).join(' ');
 
+  // Bouton de diagnostic de PAS (ex. « Rhino-pharyngite virale »).
+  // Marqué une fois cliqué : un 2e ALL IN ne le désélectionne pas.
+  function cliquerDiag(nom) {
+    const el = texteExact(nom);
+    if (!el) return false;
+    if (!el.dataset.srClique) { el.dataset.srClique = '1'; el.click(); }
+    return true;
+  }
+
+  // Remonte depuis un libellé jusqu'au premier bloc qui contient le sélecteur voulu
+  function pres(libelle, selecteur) {
+    let el = texteExact(libelle);
+    while (el && !el.querySelector(selecteur)) el = el.parentElement;
+    return el ? el.querySelector(selecteur) && el : null;
+  }
+
+  function radioHospitNon() {
+    const bloc = pres('Hospitalisation', 'input[type=radio]');
+    if (!bloc) return null;
+    const radios = [...bloc.querySelectorAll('input[type=radio]')];
+    return radios.find((r) => /^non$/i.test(r.value))
+      || radios.find((r) => /\bNON\b/.test(r.closest('label')?.textContent || ''))
+      || radios[1]; // ordre affiché : OUI puis NON
+  }
+
+  // Comme un toucher dans la case : PAS calcule alors le montant (TP = part AMO, CB = reste)
+  function toucher(el) {
+    el.focus();
+    el.click();
+  }
+
+  // Hospitalisation NON, puis toucher TP, puis CB. fin(ok) : ok = false si un élément manque
+  function facturer(fin) {
+    const non = radioHospitNon();
+    if (non && !non.checked) non.click();
+    const tp = pres('TP', 'input')?.querySelector('input');
+    const cb = pres('CB', 'input')?.querySelector('input');
+    if (!tp || !cb) console.warn('[Examens β] introuvable :', !non ? 'Hospitalisation' : '', !tp ? 'TP' : '', !cb ? 'CB' : '');
+    setTimeout(() => {
+      if (tp) toucher(tp);
+      setTimeout(() => {
+        if (cb) { toucher(cb); cb.blur(); }
+        fin(!!(non && tp && cb));
+      }, 250);
+    }, 250);
+  }
+
+  // Vert si tout a été trouvé, rouge sinon (détail dans la console F12)
+  function resultat(b, ok) {
+    const c = ok ? 'fait' : 'retire';
+    b.classList.add(c);
+    setTimeout(() => b.classList.remove(c), 900);
+  }
+
   function executerMacro(m, b) {
     surOnglet('EXAM', () => {
       remplirConstantes();
       const ex = manquants(m.examen);
       if (ex) inserer(ex);
+      const diagOk = !m.diag || cliquerDiag(m.diag);
+      if (!diagOk) console.warn('[Examens β] diagnostic introuvable :', m.diag);
       surOnglet('CAT', () => {
         const cat = manquants(m.cat);
         if (cat) inserer(cat);
-        b.classList.add('fait');
-        setTimeout(() => b.classList.remove('fait'), 900);
+        facturer((ok) => resultat(b, ok && diagOk));
       });
     });
   }
@@ -202,6 +263,8 @@
     #sr-beta .nav .courant { background: #7a4fd6; color: #fff; }
     #sr-beta .nav .macro { background: #fff1cc; color: #7a5200; }
     #sr-beta .nav .macro.fait { background: #2e9e5b; color: #fff; }
+    #sr-beta .nav .macro.retire { background: #d64545; color: #fff; }
+    #sr-beta .action { background: #fff1cc; color: #7a5200; flex-basis: 100%; }
   `;
 
   function bouton(texte, classe, action) {
@@ -275,7 +338,12 @@
         ...EXAMENS.map((g) => bouton(g.nom, g === ex ? 'courant' : '', () => afficherExamen(g))),
       );
 
-      panneau.replaceChildren(nav, tout, ...morceaux);
+      // Dans CAT : facturation en un appui
+      const actions = ex.onglet === 'CAT'
+        ? [bouton('💳 Hospit. NON + TP + CB', 'action', (e) => surOngletExam(() => facturer((ok) => resultat(e.target, ok))))]
+        : [];
+
+      panneau.replaceChildren(nav, ...actions, tout, ...morceaux);
       const actif = nav.querySelector('.courant');
       nav.scrollLeft = actif.offsetLeft - 40; // garde le groupe ouvert visible dans la barre
       surOngletExam(rafraichir); // les couleurs se lisent dans le Commentaire du bon onglet
