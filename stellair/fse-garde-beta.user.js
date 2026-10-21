@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE garde (bêta)
 // @namespace    saisie-rapide-garde
-// @version      0.4
+// @version      0.5
 // @description  Mode de garde (consult / visite, PDS auto) : cotation prédite en un bouton, options SNP et IK, carte Vitale, ALD, validation, règlement et SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -534,7 +534,7 @@
   panneau.id = 'sfr-panneau';
   Object.assign(panneau.style, {
     position: 'fixed', right: '8px', top: '35%', zIndex: 99999, width: '130px',
-    display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px',
+    display: 'flex', flexDirection: 'column', gap: '4px', padding: '6px',
     background: '#fff', border: '1px solid #4287d0', borderRadius: '10px',
     boxShadow: '0 2px 8px rgba(0,0,0,.2)', font: '14px sans-serif',
   });
@@ -556,127 +556,128 @@
     return b;
   };
 
+  let details = false; // résumé déplié
+  const ligne = (...enfants) => {
+    const d = document.createElement('div');
+    d.style.cssText = 'display:flex;gap:4px;align-items:center';
+    d.append(...enfants);
+    return d;
+  };
+  const icone = (texte, titre, action) => {
+    const b = bouton(texte, 'padding:2px 4px;border:0;background:none;color:#4287d0;font-size:13px;cursor:pointer;line-height:1', action);
+    b.title = titre;
+    b.setAttribute('aria-label', titre);
+    return b;
+  };
+  const petitTexte = (texte, couleur = '#555') => {
+    const d = document.createElement('div');
+    d.textContent = texte;
+    d.style.cssText = `font-size:11px;color:${couleur};line-height:1.3`;
+    return d;
+  };
+  const enEuros = (n) => n.toFixed(2).replace('.', ',') + ' €';
+
   function dessiner() {
     panneau.replaceChildren();
     const attente = flux && flux.attente;
-    panneau.style.width = reduit && !attente || pip ? 'auto' : '130px';
+    panneau.style.width = reduit && !attente || pip ? 'auto' : '118px';
     // Réduit : une pastille, sauf quand un choix de paiement est demandé.
     if (reduit && !attente) {
       panneau.append(bouton(flux ? '⏳ FSE' : '◀ FSE', 'padding:6px;border:0;border-radius:8px;background:#4287d0;color:#fff;font-weight:bold;cursor:pointer',
         () => reduire(false)));
       return;
     }
-    if (attente) {
-      const q = document.createElement('div');
-      q.textContent = `Paiement ${cb.toFixed(2).replace('.', ',')} € :`;
-      q.style.cssText = 'font-weight:bold;color:#333';
-      panneau.append(q);
-      for (const [cle, m] of Object.entries(MODES)) {
-        panneau.append(bouton(m.bouton, `padding:8px;border:0;border-radius:8px;color:#fff;font-weight:bold;cursor:pointer;background:${m.solo ? '#2a9d5c' : '#4287d0'}`,
-          () => choisirMode(cle)));
-      }
-      panneau.append(bouton('Plus tard', 'padding:4px;border:1px solid #999;border-radius:8px;background:#fff;color:#333;cursor:pointer',
-        () => choisirMode('plus tard')));
+    const plein = 'border:0;border-radius:8px;color:#fff;font-weight:bold;cursor:pointer';
+    if (attente) { // choix du paiement : seul bloc affiché en haut
+      panneau.append(petitTexte(`Paiement ${enEuros(cb)}`, '#333'));
+      panneau.append(bouton('💳 CB', `padding:9px;${plein};background:#2a9d5c`, () => choisirMode('cb')));
+      const esp = bouton('Espèces', `flex:1;padding:6px 2px;${plein};font-size:12px;background:#4287d0`, () => choisirMode('especes'));
+      const chq = bouton('Chèque', `flex:1;padding:6px 2px;${plein};font-size:12px;background:#4287d0`, () => choisirMode('cheque'));
+      panneau.append(ligne(esp, chq));
+      panneau.append(bouton('Plus tard', 'padding:2px;border:0;background:none;color:#666;font-size:11px;cursor:pointer', () => choisirMode('plus tard')));
+      return;
     }
-    if (flux && flux.pauseIK) {
-      panneau.append(bouton('▶ Continuer', 'padding:10px;border:0;border-radius:8px;background:#2a9d5c;color:#fff;font-weight:bold;cursor:pointer', continuerIK));
-    }
-    // Réglage de garde
+    if (flux && flux.pauseIK) panneau.append(bouton('▶ Continuer', `padding:9px;${plein};background:#2a9d5c`, continuerIK));
+
+    // Ligne du haut : consult / visite + icônes
     const seg = document.createElement('div');
-    seg.style.cssText = 'display:flex;border:1px solid #4287d0;border-radius:8px;overflow:hidden';
-    for (const [m, lib] of [['consult', 'Consult'], ['visite', 'Visite']]) {
-      seg.append(bouton(lib, `flex:1;padding:5px 2px;border:0;font-size:12px;cursor:pointer;${garde.mode === m ? 'background:#4287d0;color:#fff;font-weight:bold' : 'background:#fff;color:#4287d0'}`,
-        () => regler({ mode: m })));
+    seg.style.cssText = 'flex:1;display:flex;border:1px solid #4287d0;border-radius:8px;overflow:hidden';
+    for (const [m, lib] of [['consult', 'Cs'], ['visite', 'Vis']]) {
+      const b = bouton(lib, `flex:1;padding:4px 0;border:0;font-size:12px;cursor:pointer;${garde.mode === m ? 'background:#4287d0;color:#fff;font-weight:bold' : 'background:#fff;color:#4287d0'}`,
+        () => regler({ mode: m }));
+      b.title = m === 'consult' ? 'Consultation' : 'Visite';
+      seg.append(b);
     }
-    panneau.append(seg);
+    const haut = ligne(seg);
+    if (!pip && window.documentPictureInPicture) haut.append(icone('📌', 'Détacher au premier plan', detacher));
+    haut.append(icone('–', 'Réduire', () => reduire(true)));
+    panneau.append(haut);
+
     if (garde.mode === 'visite') {
-      const jours = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
-      const d = new Date();
       const suivantPds = { auto: 'oui', oui: 'non', non: 'auto' };
-      const periode = bouton(`${jours[d.getDay()]} ${d.getHours()} h · ${pdsActive() ? 'PDS' : 'hors PDS'}${garde.pds === 'auto' ? '' : ' (forcé)'}`,
-        `padding:3px;border:0;border-radius:6px;font-size:11px;cursor:pointer;${pdsActive() ? 'background:#fdecd2;color:#7a4a00' : 'background:#e3f4e9;color:#1d6b3c'}`,
+      const periode = bouton(`${pdsActive() ? 'PDS' : 'Hors PDS'}${garde.pds === 'auto' ? '' : ' (forcé)'}`,
+        `padding:2px;border:0;border-radius:6px;font-size:11px;cursor:pointer;${pdsActive() ? 'background:#fdecd2;color:#7a4a00' : 'background:#e3f4e9;color:#1d6b3c'}`,
         () => regler({ pds: suivantPds[garde.pds] }));
-      periode.title = 'Appuie pour forcer PDS / hors PDS, puis revenir en auto';
+      periode.title = `${new Date().getHours()} h : appuie pour forcer PDS / hors PDS, puis revenir en auto`;
       panneau.append(periode);
     }
-    // Cotation prédite (gros bouton) puis variantes
+
+    // Cotation prédite (gros bouton), variantes en petit
     cotationsGarde().forEach((c, i) => {
-      const b = bouton(c.nom, `padding:${i ? 7 : 14}px 4px;border:0;border-radius:8px;color:#fff;font-weight:bold;font-size:${i ? 13 : 16}px;background:#4287d0;cursor:pointer;opacity:${flux ? 0.5 : 1}`,
-        () => demarrer(c));
+      const b = bouton(c.nom, `padding:${i ? 5 : 12}px 2px;${plein};font-size:${i ? 12 : 16}px;background:#4287d0;opacity:${flux ? 0.5 : 1}`, () => demarrer(c));
       b.disabled = !!flux;
       panneau.append(b);
     });
+
     // Options de la prochaine FSE
-    const opts = document.createElement('div');
-    opts.style.cssText = 'display:flex;gap:4px';
-    const plein = snp() >= SNP_MAX_SEMAINE;
+    const plein15 = snp() >= SNP_MAX_SEMAINE;
     const option = (lib, actif, grise, action) => {
-      const b = bouton(lib, `flex:1;padding:4px 2px;border-radius:14px;font-size:11px;cursor:pointer;border:1px solid ${actif ? '#4287d0' : '#bbb'};background:${actif ? '#dcebfa' : '#fff'};color:${grise ? '#aaa' : '#333'}`, action);
+      const b = bouton(lib, `flex:1;padding:3px 0;border-radius:12px;font-size:11px;cursor:pointer;border:1px solid ${actif ? '#4287d0' : '#bbb'};background:${actif ? '#dcebfa' : '#fff'};color:${grise ? '#aaa' : '#333'}`, action);
       b.disabled = !!flux || grise;
       return b;
     };
-    opts.append(option(`+ SNP ${snp()}/${SNP_MAX_SEMAINE}`, optSnp, plein && !optSnp, () => { optSnp = !optSnp; dessiner(); }));
-    if (garde.mode === 'visite') opts.append(option('+ IK', optIk, false, () => { optIk = !optIk; dessiner(); }));
+    const opts = ligne(option(`SNP ${snp()}/${SNP_MAX_SEMAINE}`, optSnp, plein15 && !optSnp, () => { optSnp = !optSnp; dessiner(); }));
+    if (garde.mode === 'visite') opts.append(option('IK', optIk, false, () => { optIk = !optIk; dessiner(); }));
     panneau.append(opts);
-    const compteur = document.createElement('div');
-    compteur.textContent = `SNP semaine : ${snp()}/${SNP_MAX_SEMAINE}`;
-    compteur.title = 'Cliquer pour corriger';
-    compteur.style.cssText = 'font-size:12px;cursor:pointer;color:#333';
-    compteur.onclick = () => {
-      const n = parseInt(fen().prompt('Nombre de SNP cette semaine :', snp()), 10);
-      if (n >= 0) fixerSnp(n);
-    };
-    panneau.append(compteur);
-    if (!connecte()) {
-      const lien = document.createElement('button');
-      lien.textContent = envoi ? 'Connexion…' : 'Connecter SumUp';
-      lien.disabled = envoi;
-      lien.style.cssText = 'padding:6px;border:0;border-radius:8px;background:#c33;color:#fff;font-weight:bold;cursor:pointer';
-      lien.onclick = connecter;
-      panneau.append(lien);
-    }
+
+    if (!connecte()) panneau.append(bouton(envoi ? 'Connexion…' : 'Connecter SumUp', 'padding:3px;border:0;border-radius:8px;background:#c33;color:#fff;font-size:11px;cursor:pointer', connecter));
+
     if (cb > 0 && !flux) {
-      const carte = document.createElement('button');
-      carte.textContent = envoi ? '💳 Envoi…' : `💳 CB ${cb.toFixed(2).replace('.', ',')} €`;
+      const carte = bouton(envoi ? 'Envoi…' : `💳 ${enEuros(cb)}`, `flex:1;padding:6px 2px;${plein};font-size:12px;background:#2a9d5c`, encaisser);
       carte.disabled = envoi;
       carte.title = 'Envoyer le reste à payer au SumUp Solo';
-      carte.style.cssText = 'padding:8px;border:0;border-radius:8px;background:#2a9d5c;color:#fff;font-weight:bold;cursor:pointer';
-      carte.onclick = encaisser;
-      const oubli = document.createElement('button');
-      oubli.textContent = 'Pas de CB';
-      oubli.style.cssText = 'padding:2px;border:0;background:none;color:#666;font-size:11px;cursor:pointer';
-      oubli.onclick = () => { noter({ paiement: 'Pas de CB (autre mode)' }); fixerCb(0); };
-      panneau.append(carte, oubli);
+      panneau.append(ligne(carte, icone('✕', 'Pas de CB', () => { noter({ paiement: 'Pas de CB (autre mode)' }); fixerCb(0); })));
     }
-    if (!pip && window.documentPictureInPicture) {
-      const d = document.createElement('button');
-      d.textContent = '📌 Détacher';
-      d.title = 'Ouvrir le panneau dans une petite fenêtre au-dessus de tout';
-      d.style.cssText = 'padding:2px;border:1px solid #4287d0;border-radius:8px;background:#fff;color:#4287d0;font-size:11px;cursor:pointer';
-      d.onclick = detacher;
-      panneau.append(d);
+
+    if (flux) { // déroulé en cours : message + stop sur une ligne
+      const m = petitTexte(message || '…', '#333');
+      m.style.flex = '1';
+      panneau.append(ligne(m, icone('■', 'Arrêter', () => terminer('Arrêté'))));
+    } else if (message) {
+      panneau.append(petitTexte(message, '#333'));
     }
-    if (flux) {
-      const arret = document.createElement('button');
-      arret.textContent = '■ Stop';
-      arret.style.cssText = 'padding:4px;border:1px solid #c33;border-radius:8px;background:#fff;color:#c33;cursor:pointer';
-      arret.onclick = () => terminer('Arrêté');
-      panneau.append(arret);
-    }
-    panneau.append(bouton('▶ Réduire', 'padding:2px;border:0;background:none;color:#4287d0;font-size:11px;cursor:pointer', () => reduire(true)));
+
+    // Résumé : une ligne, détails au toucher
     if (resume.total) {
-      const r = document.createElement('div');
-      r.style.cssText = 'font-size:11px;color:#333;border-top:1px solid #ddd;padding-top:4px;white-space:pre-line';
-      r.textContent = ['Dernière FSE :', resume.cotation, resume.ald && 'ALD', resume.mode,
-        `Total ${resume.total} (AMO ${resume.amo}, AMC ${resume.amc})`, `Patient ${resume.patient}`,
-        resume.validee ? '✔ validée' : 'non validée par le script', resume.reglement, resume.paiement].filter(Boolean).join('\n');
+      const court = `${resume.validee ? '✔' : '•'} ${resume.cotation || ''} · ${resume.patient}${resume.reglement ? ' · ' + resume.reglement.split(' ')[1] : ''}`;
+      const r = petitTexte(details ? '' : court + ' ▸');
+      r.style.cssText += ';cursor:pointer;border-top:1px solid #ddd;padding-top:3px';
+      r.title = 'Détails de la dernière FSE';
+      r.onclick = () => { details = !details; dessiner(); };
+      if (details) {
+        r.style.whiteSpace = 'pre-line';
+        r.textContent = ['▾ Dernière FSE', resume.cotation, resume.ald && 'ALD', resume.mode,
+          `Total ${resume.total}`, `AMO ${resume.amo} · AMC ${resume.amc}`, `Patient ${resume.patient}`,
+          resume.validee ? '✔ validée' : 'non validée par le script', resume.reglement, resume.paiement].filter(Boolean).join('\n');
+      }
       panneau.append(r);
-    }
-    if (message) {
-      const m = document.createElement('div');
-      m.textContent = message;
-      m.style.cssText = 'font-size:12px;color:#333';
-      panneau.append(m);
+      if (details) {
+        const corr = bouton('Corriger le compteur SNP', 'padding:0;border:0;background:none;color:#4287d0;font-size:11px;cursor:pointer;text-align:left', () => {
+          const n = parseInt(fen().prompt('Nombre de SNP cette semaine :', snp()), 10);
+          if (n >= 0) fixerSnp(n);
+        });
+        panneau.append(corr);
+      }
     }
   }
   if (flux) message = `${flux.cotation} : reprise…`;
