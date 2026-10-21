@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.1
+// @version      0.2
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE
 // @match        https://fse.stellair.fr/*
 // @grant        none
@@ -125,10 +125,12 @@
       detecte: () => present('Nature de prise en charge'),
       action: async () => {
         afficher('Attente des droits (ALD)…');
-        if (await attendre(() => present('ALD'), ATTENTE_ALD_MS)) {
-          const ald = chercher('ALD sur attestation')[0];
-          if (!ald) stop('Patient ALD mais case « ALD sur attestation » introuvable');
-          cliquer(cliquable(ald));
+        // La case s'appelle « ALD » (droits en ligne) ou « ALD sur attestation » ; avec la bulle ALD du patient
+        // il y a donc 2 éléments, la case étant la plus basse. Sans ALD : la case seule.
+        const options = () => [...chercher('ALD sur attestation'), ...chercher('ALD')];
+        if (await attendre(() => options().length >= 2, ATTENTE_ALD_MS)) {
+          const ald = plusBas(options());
+          cliquer(ald.closest('label') || ald.parentElement.querySelector('input[type="radio"], [role="radio"]') || ald);
           afficher('ALD cochée');
           await pause(300);
         }
