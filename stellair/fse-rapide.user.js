@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.10
+// @version      0.11
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
@@ -92,10 +92,13 @@
     return null;
   }
 
-  function totalActes() {
-    const m = document.body.innerText.match(/Total actes\s*([\d.,]+)\s*€/);
-    return m ? parseFloat(m[1].replace(',', '.')) : 0;
+  // null = libellé absent (mise en page téléphone) ; sinon le montant lu, même séparé par d'autres mots.
+  function totalActes(texte = document.body.innerText) {
+    const m = texte.match(/Total (?:des )?actes[^\d€]{0,40}?([\d][\d\s.,]*)\s*€/i);
+    return m ? parseFloat(m[1].replace(/\s/g, '').replace(',', '.')) : (/Total (des )?actes/i.test(texte) ? 0 : null);
   }
+  console.assert(totalActes('Total actes 30.00 €') === 30 && totalActes('Total actes :\n30,00 €') === 30 &&
+    totalActes('Total actes\n0.00 €') === 0 && totalActes('rien') === null);
 
   // ---------- paiement CB sur le SumUp Solo (Cloud API) ----------
   // Identifiants gardés dans le stockage Violentmonkey (onglet « Valeurs » du script pour les corriger), jamais sur GitHub.
@@ -298,7 +301,9 @@
           cliquer(plus);
           await pause(600);
         }
-        if (!(await attendre(() => totalActes() > 0, 5000))) stop('Total actes à 0 : cotation non ajoutée');
+        // Téléphone plus lent : on laisse 15 s. Si le total n'est pas affiché du tout, le récapitulatif fera le contrôle.
+        await attendre(() => totalActes() !== 0, 15000);
+        if (totalActes() === 0) stop('Total actes à 0 : cotation non ajoutée');
         await suivant();
       },
     },
@@ -314,6 +319,7 @@
         await pause(300);
         // Avertissement (ex. acte déjà facturé aujourd'hui) : c'est au médecin de décider.
         if (present('Tout cocher')) stop('Avertissement sur le récapitulatif : vérifie puis clique Sécurisation');
+        if (lireRecap(document.body.innerText).total === '0,00 €') stop('Total facture à 0 € : cotation non ajoutée');
         await suivant(/^Sécurisation/, false); // la page Sécurisation est vérifiée juste après
         const valider = await attendre(() => plusBas(chercher(RE_VALIDER)), 15000);
         if (!valider) stop('Page Sécurisation : bouton de validation non reconnu, valide à la main');
