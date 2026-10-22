@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Stellair FSE rapide (bêta)
 // @namespace    saisie-rapide
-// @version      0.16
+// @version      0.17
 // @description  Un bouton par cotation : lecture carte Vitale, ALD auto, ajout des favoris, pages suivantes, validation de la FSE ; reste à payer envoyé au SumUp Solo
 // @match        https://fse.stellair.fr/*
+// @match        https://somenor.net/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -14,6 +15,27 @@
 
 (function () {
   'use strict';
+
+  // ---------- côté Somelog : on note le patient affiché, pour choisir le bon bénéficiaire de la carte ----------
+  if (location.hostname === 'somenor.net') {
+    // innerText sépare les blocs (nom / âge) ; textContent les colle (« SeryalF 26a »), d'où le \s* de la regex.
+    const texte = (el) => (el.innerText || el.textContent || '').normalize('NFC').replace(/[↑↓]/g, ' ').replace(/\s+/g, ' ').trim();
+    // En-tête : « SABOUH Seryal » puis « F 26a 9m (01/01/2000) » ; on garde le plus petit bloc qui contient les deux.
+    const RE_ENTETE = /^(.*?[A-Za-zÀ-ÿ].*?)\s*[FM]\s+\d+\s*[amj]\b.*?\((\d\d\/\d\d\/\d{4})\)/;
+    let dernier = '', ecrit = 0;
+    setInterval(() => {
+      const m = [...document.body.querySelectorAll('*')].filter((el) => /\(\d\d\/\d\d\/\d{4}\)/.test(el.textContent) && el.textContent.length < 200)
+        .map(texte).filter((t) => t.length < 120)
+        .map((t) => t.match(RE_ENTETE)).filter(Boolean).sort((a, b) => a[0].length - b[0].length)[0];
+      if (!m) return;
+      const cle = m[1] + m[2];
+      if (cle === dernier && Date.now() - ecrit < 60000) return; // réécrit chaque minute pour rester « récent »
+      dernier = cle;
+      ecrit = Date.now();
+      GM_setValue('somelog-patient', { nom: m[1], ddn: m[2], t: ecrit });
+    }, 3000);
+    return;
+  }
 
   // Une ligne = un bouton. "favoris" = nom exact du favori Stellair (ligne en gras de l'onglet Favoris).
   const COTATIONS = [
@@ -41,6 +63,34 @@
       ![...el.children].some((c) => ok(norm(c.textContent))));
   }
   const present = (texte) => chercher(texte).length > 0;
+  // ---------- patient Somelog → choix du bénéficiaire de la carte ----------
+  const SOMELOG_RECENT_MS = 10 * 60 * 1000;
+  const majuscules = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9/]+/g, ' ').trim();
+  function patientSomelog() {
+    const p = GM_getValue('somelog-patient', null);
+    return p && Date.now() - p.t < SOMELOG_RECENT_MS ? p : null;
+  }
+  // Tous les mots du nom ET du prénom doivent y être (ordre libre, accents ignorés).
+  const contientNom = (txt, p) => { const t = ` ${majuscules(txt)} `; return majuscules(p.nom).split(' ').every((m) => t.includes(` ${m} `)); };
+  // Éléments de Stellair au nom du patient Somelog ; écartés si une date de naissance différente est affichée sur la même ligne.
+  function memePatient(p) {
+    return [...document.body.querySelectorAll('*')].filter((el) => !el.closest('#sfr-panneau') && contientNom(el.textContent, p) &&
+      visible(el) && ![...el.children].some((c) => contientNom(c.textContent, p))).filter((el) => {
+      let ligne = el;
+      while (ligne.parentElement && norm(ligne.parentElement.textContent).length < 150) ligne = ligne.parentElement;
+      const dates = norm(ligne.textContent).match(/\d\d\/\d\d\/\d{4}/g);
+      return !dates || dates.includes(p.ddn);
+    });
+  }
+  // Journal du déroulé affiché dans le panneau : ce qui a été lu, cliqué, vérifié.
+  let lignesJournal = [];
+  function journal(ligne) { lignesJournal.push(ligne); dessiner(); }
+  function blocJournal() {
+    const d = document.createElement('div');
+    d.textContent = lignesJournal.join('\n');
+    d.style.cssText = 'font-size:11px;color:#555;white-space:pre-line;line-height:1.3';
+    return d;
+  }
   const cliquable = (el) => el.closest('button, a, [role="button"], label') || el;
   // Le bouton du bas de page est plus bas que le libellé identique de la frise d'étapes.
   const plusBas = (els) => els.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
@@ -267,6 +317,18 @@
       action: async () => cliquer(cliquable(chercher('Lire la carte Vitale')[0])),
     },
     {
+      nom: 'bénéficiaire',
+      // Plusieurs bénéficiaires sur la carte : Stellair attend un choix entre la lecture et la feuille de soins.
+      detecte: () => flux.faits.includes('carte') && !flux.faits.includes('fse') && !present('Feuille de soins électronique') &&
+        !!flux.somelog && memePatient(flux.somelog).length > 0,
+      action: async () => {
+        const trouves = memePatient(flux.somelog);
+        if (trouves.length > 1) return journal('⚠ Plusieurs bénéficiaires correspondent : choisis à la main');
+        cliquer(cliquable(trouves[0]));
+        journal(`👆 Bénéficiaire cliqué : ${norm(trouves[0].textContent)}`);
+      },
+    },
+    {
       nom: 'fse',
       detecte: () => present('Feuille de soins électronique') && present('Créer'),
       action: async () => cliquer(cliquable(chercher('Créer')[0])),
@@ -275,6 +337,9 @@
       nom: 'prise en charge',
       detecte: () => present('Nature de prise en charge'),
       action: async () => {
+        if (flux.somelog) {
+          journal(memePatient(flux.somelog).length ? '✔ Patient Stellair = Somelog' : '⚠ Patient Stellair différent de Somelog : vérifie !');
+        }
         afficher('Attente des droits (ALD)…');
         // La case s'appelle « ALD » (droits en ligne) ou « ALD sur attestation » ; avec la bulle ALD du patient
         // il y a donc 2 éléments, la case étant la plus basse. Sans ALD : la case seule.
@@ -413,6 +478,9 @@
         !fen().confirm(`Déjà ${snp()} SNP cette semaine (max ${SNP_MAX_SEMAINE}). Continuer quand même ?`)) return;
     flux = { cotation: c.nom, debut: Date.now(), faits: [] };
     noter({ cotation: c.nom }, true);
+    flux.somelog = patientSomelog();
+    lignesJournal = [];
+    journal(flux.somelog ? `📋 Somelog : ${flux.somelog.nom} (${flux.somelog.ddn})` : '📋 Somelog : aucun patient ouvert');
     sauver();
     afficher(`${c.nom} : en cours…`);
   }
@@ -581,6 +649,7 @@
         resume.validee ? '✔ validée' : 'non validée par le script', resume.reglement, resume.paiement].filter(Boolean).join('\n');
       panneau.append(r);
     }
+    if (lignesJournal.length) panneau.append(blocJournal());
     if (message) {
       const m = document.createElement('div');
       m.textContent = message;
