@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Examens types (bêta)
 // @namespace    saisie-rapide-beta
-// @version      3.3
+// @version      4.0
 // @description  Bêta : examens découpés en morceaux cliquables, insérés à la suite dans le Commentaire d'EXAM
 // @match        https://somenor.net/*
 // @grant        none
@@ -78,7 +78,10 @@
     (el) => el.children.length === 0 && el.textContent.trim() === t && !el.closest('#sr-beta')
   );
 
+  let ongletCourant = 'EXAM'; // onglet affiché par PAS (suivi pour colorer le bon groupe)
+
   function surOnglet(nom, action) {
+    ongletCourant = nom;
     const onglet = texteExact(nom);
     if (!onglet) return action();
     onglet.click();
@@ -329,6 +332,23 @@
     #sr-beta .nav .macro { background: #fff1cc; color: #7a5200; }
     #sr-beta .nav .macro.fait { background: #2e9e5b; color: #fff; }
     #sr-beta .nav .macro.retire { background: #d64545; color: #fff; }
+    #sr-beta .macro { background: #fff1cc; color: #7a5200; }
+    #sr-beta .macro.fait { background: #2e9e5b; color: #fff; }
+    #sr-beta .macro.retire { background: #d64545; color: #fff; }
+    /* Grand écran : tableau fixe à gauche de PAS */
+    #sr-beta.tableau { left: 16px; right: auto; top: 90px; bottom: auto; align-items: stretch; }
+    #sr-beta .feuille { pointer-events: auto; background: rgba(255,255,255,.97); border-radius: 14px;
+      box-shadow: 0 6px 20px rgba(0,0,0,.12); padding: 10px 12px; max-height: calc(100vh - 110px);
+      overflow-y: auto; overscroll-behavior: contain; }
+    #sr-beta .entete { display: flex; justify-content: space-between; align-items: center; font-weight: 600; color: #7a4fd6; }
+    #sr-beta .entete button { padding: 2px 10px; background: transparent; color: #556; font-size: 18px; }
+    #sr-beta .macros { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+    #sr-beta .grille { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+    #sr-beta .groupe h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #7a4fd6; }
+    #sr-beta .groupe.cat h4 { color: #b26b00; }
+    #sr-beta .groupe .boutons { display: flex; flex-wrap: wrap; gap: 5px; }
+    #sr-beta .groupe button { padding: 6px 10px; font-size: 13px; }
+    #sr-beta.replie .macros, #sr-beta.replie .grille { display: none; }
     #sr-beta .action { background: #fff1cc; color: #7a5200; flex-basis: 100%; }
   `;
 
@@ -340,79 +360,87 @@
     return b;
   }
 
-  /* ===== Interface : un seul écran = barre des groupes + morceaux du groupe ouvert ===== */
-  function creerInterface() {
+  // Rouge un instant pour montrer la suppression, puis retour à la couleur normale
+  function flashRouge(boutons) {
+    boutons.forEach((b) => b.classList.add('retire'));
+    setTimeout(() => boutons.forEach((b) => b.classList.remove('retire')), 600);
+  }
+
+  // Recolore ce qui est affiché après chaque action (un groupe dans la bulle, tout l'onglet dans le tableau)
+  let rafraichirVisible = () => {};
+
+  /* ===== Un groupe : bouton Tout + un bouton par morceau (+ actions de facturation pour CAT)
+     gris = pas écrit · vert = texte par défaut écrit · orange = inverse écrit ===== */
+  function construireGroupe(ex) {
+    const onglet = ex.onglet || 'EXAM';
+    const surLeBonOnglet = (action) => surOnglet(onglet, action);
+    const paires = (ex.morceaux || decouper(ex.texte)).map(paire);
+    const etat = ([def, inv]) => (estPresent(def) ? 'fait' : inv && estPresent(inv) ? 'inverse' : '');
+
+    const morceaux = paires.map((p) => {
+      const [def, inv] = p;
+      const b = bouton(def, '', () => surLeBonOnglet(() => {
+        const e = etat(p);
+        if (e === 'fait' && inv) remplacer(def, inv);
+        else if (e === 'fait') { retirer([def]); flashRouge([b]); }
+        else if (e === 'inverse') { retirer([inv]); flashRouge([b]); }
+        else inserer(def);
+        rafraichirVisible();
+      }));
+      return b;
+    });
+
+    // Tout : écrit le texte par défaut des morceaux pas encore écrits ; si tout est écrit, efface tout
+    const tout = bouton('Tout', 'tout', () => surLeBonOnglet(() => {
+      const vides = paires.filter((p) => !etat(p));
+      if (vides.length) inserer(vides.map((p) => p[0]).join(' '));
+      else { retirer(paires.flat().filter(Boolean)); flashRouge([tout, ...morceaux]); }
+      rafraichirVisible();
+    }));
+
+    function rafraichir() {
+      paires.forEach((p, i) => {
+        const e = etat(p);
+        morceaux[i].classList.toggle('fait', e === 'fait');
+        morceaux[i].classList.toggle('inverse', e === 'inverse');
+        morceaux[i].textContent = (e === 'inverse' ? p[1] : p[0]) + (p[1] ? ' ⇄' : '');
+      });
+      tout.classList.toggle('fait', paires.every((p) => etat(p)));
+    }
+
+    const actions = onglet === 'CAT'
+      ? [bouton('💳 Hospit. NON + TP + CB', 'action', (e) => surLeBonOnglet(() => facturer((ok) => resultat(e.target, ok)))),
+        bouton('🔍 Rapport de mise au point', 'action', rapport)]
+      : [];
+
+    return { ex, onglet, rafraichir, elements: [...actions, tout, ...morceaux] };
+  }
+
+  const boutonsMacros = () => MACROS.map((m) => { const b = bouton(m.nom, 'macro', () => executerMacro(m, b)); return b; });
+
+  /* ===== Petit écran (téléphone) : bulle 🩺 + panneau d'un groupe à la fois ===== */
+  function creerBulle() {
     document.head.appendChild(css);
     const racine = document.createElement('div');
     racine.id = 'sr-beta';
+    racine.dataset.mode = 'bulle';
     const panneau = document.createElement('div');
     panneau.className = 'panneau cache';
     let courant = EXAMENS[0]; // le panneau se rouvre sur le dernier groupe utilisé
 
-    // Rouge un instant pour montrer la suppression, puis retour à la couleur normale
-    function flashRouge(boutons) {
-      boutons.forEach((b) => b.classList.add('retire'));
-      setTimeout(() => boutons.forEach((b) => b.classList.remove('retire')), 600);
-    }
-
-    //   gris = pas écrit · vert = texte par défaut écrit · orange = inverse écrit
     function afficherExamen(ex) {
       courant = ex;
-      const surOngletExam = (action) => surOnglet(ex.onglet || 'EXAM', action);
-      const paires = (ex.morceaux || decouper(ex.texte)).map(paire);
-      const etat = ([def, inv]) => (estPresent(def) ? 'fait' : inv && estPresent(inv) ? 'inverse' : '');
-
-      const morceaux = paires.map((p) => {
-        const [def, inv] = p;
-        const b = bouton(def, '', () => surOngletExam(() => {
-          const e = etat(p);
-          if (e === 'fait' && inv) remplacer(def, inv);
-          else if (e === 'fait') { retirer([def]); flashRouge([b]); }
-          else if (e === 'inverse') { retirer([inv]); flashRouge([b]); }
-          else inserer(def);
-          rafraichir();
-        }));
-        return b;
-      });
-
-      // Tout : écrit le texte par défaut de tous les morceaux pas encore écrits ;
-      // si tout est déjà écrit, efface tout
-      const tout = bouton('Tout', 'tout', () => surOngletExam(() => {
-        const vides = paires.filter((p) => !etat(p));
-        if (vides.length) inserer(vides.map((p) => p[0]).join(' '));
-        else { retirer(paires.flat().filter(Boolean)); flashRouge([tout, ...morceaux]); }
-        rafraichir();
-      }));
-
-      // Couleur et libellé suivent le texte réellement présent dans le Commentaire
-      function rafraichir() {
-        paires.forEach((p, i) => {
-          const e = etat(p);
-          morceaux[i].classList.toggle('fait', e === 'fait');
-          morceaux[i].classList.toggle('inverse', e === 'inverse');
-          morceaux[i].textContent = (e === 'inverse' ? p[1] : p[0]) + (p[1] ? ' ⇄' : '');
-        });
-        tout.classList.toggle('fait', paires.every((p) => etat(p)));
-      }
+      const g = construireGroupe(ex);
+      rafraichirVisible = g.rafraichir;
 
       // Barre défilante : ALL IN d'abord, puis les groupes
       const nav = document.createElement('div');
       nav.className = 'nav';
-      nav.append(
-        ...MACROS.map((m) => { const b = bouton(m.nom, 'macro', () => executerMacro(m, b)); return b; }),
-        ...EXAMENS.map((g) => bouton(g.nom, g === ex ? 'courant' : '', () => afficherExamen(g))),
-      );
+      nav.append(...boutonsMacros(), ...EXAMENS.map((x) => bouton(x.nom, x === ex ? 'courant' : '', () => afficherExamen(x))));
 
-      // Dans CAT : facturation en un appui
-      const actions = ex.onglet === 'CAT'
-        ? [bouton('💳 Hospit. NON + TP + CB', 'action', (e) => surOngletExam(() => facturer((ok) => resultat(e.target, ok)))),
-          bouton('🔍 Rapport de mise au point', 'action', rapport)]
-        : [];
-
-      panneau.replaceChildren(nav, ...actions, tout, ...morceaux);
-      const actif = nav.querySelector('.courant');
-      nav.scrollLeft = actif.offsetLeft - 40; // garde le groupe ouvert visible dans la barre
-      surOngletExam(rafraichir); // les couleurs se lisent dans le Commentaire du bon onglet
+      panneau.replaceChildren(nav, ...g.elements);
+      nav.scrollLeft = nav.querySelector('.courant').offsetLeft - 40; // groupe ouvert visible dans la barre
+      surOnglet(g.onglet, g.rafraichir); // les couleurs se lisent dans le Commentaire du bon onglet
     }
 
     function fermer() {
@@ -438,12 +466,82 @@
     document.body.appendChild(racine);
   }
 
+  /* ===== Grand écran (Mac) : tableau fixe à gauche de PAS avec tous les groupes ===== */
+  let replie = false;
+  function creerTableau(largeur) {
+    document.head.appendChild(css);
+    const racine = document.createElement('div');
+    racine.id = 'sr-beta';
+    racine.dataset.mode = 'tableau';
+    racine.className = 'tableau' + (replie ? ' replie' : '');
+    racine.style.width = largeur + 'px';
+
+    const groupes = EXAMENS.map(construireGroupe);
+    // Le Commentaire affiché est celui d'un seul onglet : on ne recolore que les groupes de cet onglet,
+    // les autres gardent leur dernière couleur connue
+    rafraichirVisible = () => groupes.filter((g) => g.onglet === ongletCourant).forEach((g) => g.rafraichir());
+
+    const plier = bouton(replie ? '+' : '–', '', () => {
+      replie = racine.classList.toggle('replie');
+      plier.textContent = replie ? '+' : '–';
+    });
+    plier.setAttribute('aria-label', 'Replier le tableau');
+    const entete = document.createElement('div');
+    entete.className = 'entete';
+    entete.append('🩺 Examens types', plier);
+
+    const macros = document.createElement('div');
+    macros.className = 'macros';
+    macros.append(...boutonsMacros());
+
+    const grille = document.createElement('div');
+    grille.className = 'grille';
+    groupes.forEach((g) => {
+      const bloc = document.createElement('div');
+      bloc.className = 'groupe' + (g.onglet === 'CAT' ? ' cat' : '');
+      const titre = document.createElement('h4');
+      titre.textContent = g.ex.nom + (g.onglet === 'CAT' ? ' (onglet CAT)' : '');
+      const boutons = document.createElement('div');
+      boutons.className = 'boutons';
+      boutons.append(...g.elements);
+      bloc.append(titre, boutons);
+      grille.appendChild(bloc);
+    });
+
+    const feuille = document.createElement('div');
+    feuille.className = 'feuille';
+    feuille.append(entete, macros, grille);
+    racine.appendChild(feuille);
+    document.body.appendChild(racine);
+    rafraichirVisible();
+  }
+
+  // Clic à la main sur un onglet de PAS, ou frappe dans le Commentaire : on recolore
+  let attente;
+  const recolorerBientot = () => { clearTimeout(attente); attente = setTimeout(() => rafraichirVisible(), 250); };
+  document.addEventListener('click', (e) => {
+    if (!e.isTrusted || e.target.closest?.('#sr-beta')) return;
+    const t = e.target.textContent?.trim();
+    if (['ATCD', 'EXAM', 'CAT'].includes(t) && !e.target.children.length) { ongletCourant = t; recolorerBientot(); }
+  }, true);
+  document.addEventListener('input', (e) => { if (e.target === getCommentaire()) recolorerBientot(); }, true);
+
+  // Tableau si la place à gauche de PAS suffit, sinon bulle
+  function modeVoulu() {
+    const c = getCommentaire();
+    const place = (c ? c.getBoundingClientRect().left : 0) - 32;
+    return place >= 300 ? { mode: 'tableau', largeur: Math.min(place, 900) } : { mode: 'bulle' };
+  }
+
   // Apparition dès que la page change, sans attendre une vérification à la seconde
   function ensureButton() {
     const present = !!getCommentaire();
     const ui = document.getElementById('sr-beta');
-    if (present && !ui) creerInterface();
-    else if (!present && ui) ui.remove();
+    if (!present) { if (ui) ui.remove(); return; }
+    if (ui) return;
+    const m = modeVoulu();
+    if (m.mode === 'tableau') creerTableau(m.largeur);
+    else creerBulle();
   }
   // Une seule vérification par image affichée, pas à chaque petite modification de la page
   let prevu = false;
@@ -453,5 +551,11 @@
     requestAnimationFrame(() => { prevu = false; ensureButton(); });
   };
   new MutationObserver(planifier).observe(document.documentElement, { childList: true, subtree: true });
+  // Fenêtre redimensionnée : on reconstruit (tableau ↔ bulle, nouvelle largeur)
+  let redim;
+  window.addEventListener('resize', () => {
+    clearTimeout(redim);
+    redim = setTimeout(() => { document.getElementById('sr-beta')?.remove(); planifier(); }, 200);
+  });
   ensureButton();
 })();
