@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE sans CB (bêta)
 // @namespace    saisie-rapide-sans-cb
-// @version      0.2
+// @version      0.3
 // @description  Lecture carte Vitale, ALD auto, attend la cotation saisie à la main, puis pages suivantes et sécurisation ; affiche le reste à payer à saisir sur le SumUp
 // @match        https://fse.stellair.fr/*
 // @match        https://somenor.net/*
@@ -93,7 +93,8 @@
   // Le bouton du bas de page est plus bas que le libellé identique de la frise d'étapes.
   const plusBas = (els) => els.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
 
-  function cliquer(el) {
+  function cliquer(el, manuel = false) {
+    if (!manuel) verifierPause();
     el.scrollIntoView({ block: 'center' });
     el.click();
   }
@@ -141,6 +142,7 @@
   async function attendre(fn, ms) {
     const fin = Date.now() + ms;
     for (;;) {
+      verifierPause();
       const r = fn();
       if (r || Date.now() > fin) return r;
       await pause(250);
@@ -225,6 +227,9 @@
   // ---------- déroulé : chaque page n'est traitée qu'une fois ----------
   class Arret extends Error {}
   function stop(message) { throw new Arret(message); }
+  // Pause : l'étape en cours s'interrompt au prochain clic ou à la prochaine attente (rien d'autre n'est fait tant que flux.pause).
+  const PAUSE = 'pause';
+  function verifierPause() { if (flux && flux.pause) throw new Arret(PAUSE); }
 
   let flux = null;
   try { flux = JSON.parse(sessionStorage.getItem(CLE_FLUX)); } catch (e) { /* rien */ }
@@ -371,6 +376,7 @@
   // Clic du médecin sur un mode : on reprend le déroulé depuis la fenêtre « Feuille de soins terminée ».
   function choisirMode(choix) {
     flux.attente = false;
+    flux.pause = false;
     flux.choix = choix;
     flux.debut = Date.now(); // le temps passé à demander au patient ne compte pas
     sauver();
@@ -401,13 +407,38 @@
     return present(re);
   }
 
-  function demarrer() {
+  // Démarrer ou reprendre à la page affichée : jamais de relecture de la carte, et pas de retour sur les pages déjà passées.
+  function sauterPages() {
+    if (!flux.faits.includes('carte')) flux.faits.push('carte');
+    if (ETAPES.slice(3).some((e) => e.detecte())) { // au moins « prise en charge » est dépassée ou affichée
+      for (const n of ['bénéficiaire', 'fse']) if (!flux.faits.includes(n)) flux.faits.push(n);
+    }
+  }
+  function mettreEnPause() {
+    if (!flux) return;
+    flux.pause = true;
+    sauver();
+    afficher('⏸ En pause : fais ce qu\'il faut, puis Reprendre');
+  }
+  function reprendre() {
+    if (!flux) return;
+    flux.pause = false;
+    flux.debut = Date.now(); // le temps de pause ne compte pas
+    activite = Date.now();
+    miroir = false;
+    sauterPages();
+    sauver();
+    afficher('FSE : reprise à la page affichée…');
+  }
+
+  function demarrer(ici = false) {
     flux = { debut: Date.now(), faits: [] };
     miroir = false;
     activite = Date.now();
     noter({}, true);
     fixerCb(0); // le montant de la FSE précédente n'a plus lieu d'être
     flux.somelog = patientSomelog();
+    if (ici) sauterPages();
     lignesJournal = [];
     journal(flux.somelog ? `📋 Somelog : ${flux.somelog.nom} (${flux.somelog.ddn})` : '📋 Somelog : aucun patient ouvert');
     sauver();
@@ -426,7 +457,7 @@
     if (!panneau.isConnected) document.body.appendChild(panneau);
     surveillerRecap();
     if (miroir && Date.now() - dernierMiroir > 1500) rafraichirMiroir();
-    if (!flux || occupe) return;
+    if (!flux || occupe || flux.pause) return;
     if (!flux.attente && Date.now() - flux.debut > DUREE_MAX_MS) return terminer(resume.validee ? 'FSE validée ✔ (fin à faire à la main)' : 'Temps dépassé, arrêt');
     const etape = ETAPES.find((e) => !flux.faits.includes(e.nom) && e.detecte());
     if (!etape) {
@@ -443,7 +474,9 @@
       etapeEnCours = etape;
       await etape.action();
     } catch (e) {
-      terminer(e instanceof Arret ? '⚠ ' + e.message : 'Erreur : ' + e.message);
+      if (e instanceof Arret && e.message === PAUSE) {
+        if (flux) { flux.faits = flux.faits.filter((n) => n !== etape.nom); sauver(); } // l'étape interrompue sera rejouée si sa page est encore affichée
+      } else terminer(e instanceof Arret ? '⚠ ' + e.message : 'Erreur : ' + e.message);
     }
     activite = Date.now();
     occupe = false;
@@ -503,7 +536,7 @@
     panneau.style.width = reduit && !attente || pip ? 'auto' : '130px';
     // Réduit : une pastille (avec le montant SumUp s'il y en a un), sauf quand un choix de paiement est demandé.
     if (reduit && !attente) {
-      panneau.append(bouton(cb > 0 ? `💳 ${eur(cb)}` : flux ? '⏳ FSE' : '◀ FSE',
+      panneau.append(bouton(cb > 0 ? `💳 ${eur(cb)}` : flux ? (flux.pause ? '⏸ FSE' : '⏳ FSE') : '◀ FSE',
         'padding:6px;border:0;border-radius:8px;background:#4287d0;color:#fff;font-weight:bold;cursor:pointer', () => reduire(false)));
       return;
     }
@@ -519,9 +552,17 @@
       panneau.append(bouton('Plus tard', 'padding:4px;border:1px solid #999;border-radius:8px;background:#fff;color:#333;cursor:pointer',
         () => choisirMode('plus tard')));
     }
-    const lancer = bouton('▶ FSE', 'padding:10px;border:0;border-radius:8px;background:#4287d0;color:#fff;font-weight:bold;cursor:pointer;opacity:' + (flux ? 0.5 : 1), demarrer);
+    const lancer = bouton('▶ FSE', 'padding:10px;border:0;border-radius:8px;background:#4287d0;color:#fff;font-weight:bold;cursor:pointer;opacity:' + (flux ? 0.5 : 1), () => demarrer(false));
     lancer.disabled = !!flux;
-    panneau.append(lancer);
+    const ici = bouton('▶ Ici', 'padding:5px;border:1px solid #4287d0;border-radius:8px;background:#fff;color:#4287d0;font-weight:bold;cursor:pointer;opacity:' + (flux ? 0.5 : 1), () => demarrer(true));
+    ici.disabled = !!flux;
+    ici.title = 'Démarre à la page affichée, sans relire la carte Vitale';
+    panneau.append(lancer, ici);
+    if (flux) {
+      panneau.append(flux.pause
+        ? bouton('⏵ Reprendre', 'padding:8px;border:0;border-radius:8px;background:#2a9d5c;color:#fff;font-weight:bold;cursor:pointer', reprendre)
+        : bouton('⏸ Pause', 'padding:8px;border:0;border-radius:8px;background:#e08a00;color:#fff;font-weight:bold;cursor:pointer', mettreEnPause));
+    }
     if (cb > 0) {
       // Le montant à taper sur le SumUp, visible dès le récapitulatif.
       const sumup = document.createElement('div');
@@ -539,7 +580,7 @@
       panneau.append(tete);
       listeMiroir.forEach((c, i) => panneau.append(bouton((c.perso ? '👤 ' : '') + c.t,
         'padding:5px;border:1px solid #4287d0;border-radius:8px;background:#eef5fd;color:#1a4f8a;font-size:12px;cursor:pointer;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
-        () => { cliquer(cliquable(listeMiroir[i].el)); setTimeout(() => rafraichirMiroir(true), 600); })));
+        () => { cliquer(cliquable(listeMiroir[i].el), true); setTimeout(() => rafraichirMiroir(true), 600); })));
     }
     if (!pip && window.documentPictureInPicture) {
       const d = document.createElement('button');
