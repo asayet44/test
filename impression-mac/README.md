@@ -1,6 +1,6 @@
 # Impression directe Mac (pages impaires)
 
-Userscript Violentmonkey pour Safari (macOS) : sur `https://somenor.net/sos77/ALP/`, un PDF qui s'ouvre part
+Userscript Violentmonkey pour Safari (macOS) : sur `https://somenor.net/sos77/ALP/` et `https://fse.stellair.fr/`, un PDF qui s'ouvre part
 directement à l'imprimante choisie, **pages impaires uniquement** (réglable).
 
 ## Pourquoi un serveur local ?

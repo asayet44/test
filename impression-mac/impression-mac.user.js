@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Impression directe Mac (pages impaires)
 // @namespace    saisie-rapide
-// @version      1.0
-// @description  Bouton imprimer + molette (imprimante, pages impaires). Les PDF ouverts sur ALP partent directement à l'imprimante choisie.
+// @version      1.1
+// @description  Bouton imprimer + molette (imprimante, pages impaires). Les PDF ouverts sur ALP et Stellair partent directement à l'imprimante choisie.
 // @match        https://somenor.net/sos77/ALP/*
+// @match        https://fse.stellair.fr/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
