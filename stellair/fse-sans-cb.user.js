@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Stellair FSE sans CB (bêta)
 // @namespace    saisie-rapide-sans-cb
-// @version      0.3
-// @description  Lecture carte Vitale, ALD auto, attend la cotation saisie à la main, puis pages suivantes et sécurisation ; affiche le reste à payer à saisir sur le SumUp
+// @version      0.4
+// @description  Démarre tout seul à l'insertion de la carte Vitale (bouton ⚡ Auto), ALD auto, attend la cotation saisie à la main, puis pages suivantes et sécurisation ; affiche le reste à payer à saisir sur le SumUp
 // @match        https://fse.stellair.fr/*
 // @match        https://somenor.net/*
 // @grant        GM_getValue
@@ -47,6 +47,9 @@
   const CLE_CB = 'stellair-sc-cb';
   const CLE_RESUME = 'stellair-sc-resume';
   const CLE_REDUIT = 'stellair-sc-reduit';
+  const CLE_AUTO = 'stellair-sc-auto';
+  const AUTO_DELAI_MS = 1500; // délai avant le départ automatique, pendant lequel on peut annuler
+  const AUTO_REARME_MS = 2000; // la page de la carte doit avoir disparu pendant ce temps avant d'accepter une nouvelle carte
 
   const norm = (s) => (s || '').normalize('NFC').replace(/\s+/g, ' ').trim();
   const visible = (el) => el.getClientRects().length > 0;
@@ -71,13 +74,14 @@
   // Tous les mots du nom ET du prénom doivent y être (ordre libre, accents ignorés).
   const contientNom = (txt, p) => { const t = ` ${majuscules(txt)} `; return majuscules(p.nom).split(' ').every((m) => t.includes(` ${m} `)); };
   // Éléments de Stellair au nom du patient Somelog ; écartés si une date de naissance différente est affichée sur la même ligne.
-  function memePatient(p) {
+  // exigerDate : la date de naissance de Somelog doit en plus être affichée sur la ligne (démarrage automatique : moins de faux positifs).
+  function memePatient(p, exigerDate = false) {
     return [...document.body.querySelectorAll('*')].filter((el) => !el.closest('#sfc-panneau') && contientNom(el.textContent, p) &&
       visible(el) && ![...el.children].some((c) => contientNom(c.textContent, p))).filter((el) => {
       let ligne = el;
       while (ligne.parentElement && norm(ligne.parentElement.textContent).length < 150) ligne = ligne.parentElement;
       const dates = norm(ligne.textContent).match(/\d\d\/\d\d\/\d{4}/g);
-      return !dates || dates.includes(p.ddn);
+      return dates ? dates.includes(p.ddn) : !exigerDate;
     });
   }
   // Journal du déroulé affiché dans le panneau : ce qui a été lu, cliqué, vérifié.
@@ -452,10 +456,49 @@
     afficher(message);
   }
 
+  // ---------- démarrage automatique à l'insertion de la carte ----------
+  // Stellair lit la carte tout seul et ouvre soit le choix du bénéficiaire, soit la page « Feuille de soins électronique ».
+  // On part dès que l'une de ces pages apparaît, une seule fois par carte : il faut avoir quitté cette page (≥ 2 s) pour être de nouveau prêt.
+  let auto = true;
+  try { auto = localStorage.getItem(CLE_AUTO) !== '0'; } catch (e) { /* rien */ }
+  function reglerAuto(oui) {
+    auto = oui;
+    departAuto = 0;
+    try { localStorage.setItem(CLE_AUTO, oui ? '1' : '0'); } catch (e) { /* stockage bloqué */ }
+    dessiner();
+  }
+  function pageCarteLue() {
+    if (present('Feuille de soins électronique') && present('Créer')) return true;
+    const p = patientSomelog();
+    return !!p && !present('Feuille de soins électronique') && memePatient(p, true).length > 0; // choix du bénéficiaire
+  }
+  let armee = false, departAuto = 0, horsPageDepuis = 0; // armée = false au chargement : recharger la page ne relance rien
+  function surveillerAuto() {
+    if (!pageCarteLue()) {
+      if (!horsPageDepuis) horsPageDepuis = Date.now();
+      if (Date.now() - horsPageDepuis >= AUTO_REARME_MS) armee = true;
+      if (departAuto) { departAuto = 0; dessiner(); } // la page a disparu pendant le délai
+      return;
+    }
+    horsPageDepuis = 0;
+    if (!armee || !auto) return;
+    if (!departAuto) { departAuto = Date.now(); afficher('⚡ Carte lue : départ automatique…'); return; }
+    if (Date.now() - departAuto < AUTO_DELAI_MS) return;
+    armee = false;
+    departAuto = 0;
+    demarrer(true);
+  }
+  function annulerAuto() {
+    armee = false; // pas de nouvel essai sur cette page
+    departAuto = 0;
+    afficher('Départ automatique annulé');
+  }
+
   let occupe = false;
   setInterval(async () => {
     if (!panneau.isConnected) document.body.appendChild(panneau);
     surveillerRecap();
+    if (!flux) surveillerAuto();
     if (miroir && Date.now() - dernierMiroir > 1500) rafraichirMiroir();
     if (!flux || occupe || flux.pause) return;
     if (!flux.attente && Date.now() - flux.debut > DUREE_MAX_MS) return terminer(resume.validee ? 'FSE validée ✔ (fin à faire à la main)' : 'Temps dépassé, arrêt');
@@ -558,6 +601,12 @@
     ici.disabled = !!flux;
     ici.title = 'Démarre à la page affichée, sans relire la carte Vitale';
     panneau.append(lancer, ici);
+    if (departAuto) {
+      panneau.append(bouton('✖ Annuler le départ', 'padding:8px;border:0;border-radius:8px;background:#c33;color:#fff;font-weight:bold;cursor:pointer', annulerAuto));
+    }
+    panneau.append(bouton(auto ? '⚡ Auto : ON' : '⚡ Auto : OFF',
+      `padding:3px;border:1px solid #4287d0;border-radius:8px;font-size:11px;font-weight:bold;cursor:pointer;background:${auto ? '#4287d0' : '#fff'};color:${auto ? '#fff' : '#4287d0'}`,
+      () => reglerAuto(!auto)));
     if (flux) {
       panneau.append(flux.pause
         ? bouton('⏵ Reprendre', 'padding:8px;border:0;border-radius:8px;background:#2a9d5c;color:#fff;font-weight:bold;cursor:pointer', reprendre)
