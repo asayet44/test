@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Stellair FSE sans CB (bêta)
 // @namespace    saisie-rapide-sans-cb
-// @version      0.1
+// @version      0.2
 // @description  Lecture carte Vitale, ALD auto, attend la cotation saisie à la main, puis pages suivantes et sécurisation ; affiche le reste à payer à saisir sur le SumUp
 // @match        https://fse.stellair.fr/*
 // @match        https://somenor.net/*
@@ -38,6 +38,7 @@
   const ATTENTE_ALD_MS = 5000; // temps laissé aux droits en ligne (ADRi) pour afficher la bulle ALD
   const DUREE_MAX_MS = 3 * 60 * 1000; // lecture carte + choix du bénéficiaire compris
   const ATTENTE_COTATION_MS = 10 * 60 * 1000; // temps laissé au médecin pour saisir la cotation
+  const STUCK_MS = 8000; // sans nouvelle étape pendant ce temps, le panneau recopie les boutons de la page
   const STABLE_MS = 2500; // le total des actes ne doit plus bouger pendant ce temps avant de passer à la suite
   const RE_VALIDER = /^(Sécuriser|Valider|Signer)\b/;
 
@@ -95,6 +96,46 @@
   function cliquer(el) {
     el.scrollIntoView({ block: 'center' });
     el.click();
+  }
+
+  // ---------- miroir : les boutons de la page recopiés dans le panneau (utile dans la fenêtre détachée) ----------
+  // S'affiche tout seul quand le déroulé bloque (patient Somelog illisible, plusieurs bénéficiaires, erreur…), ou au bouton « Page ».
+  let miroir = false, listeMiroir = [], sigMiroir = '', dernierMiroir = 0, activite = Date.now();
+  const nbDates = (el) => (norm(el.textContent).match(/\d\d\/\d\d\/\d{4}/g) || []).length;
+  function candidatsPage() {
+    const res = [], vus = new Set();
+    const ajouter = (t, el, perso) => { t = t.slice(0, 40); if (t && !vus.has(t)) { vus.add(t); res.push({ t, el, perso }); } };
+    // Choix du bénéficiaire : les lignes de la page qui portent une date de naissance, en premier.
+    if (flux && flux.faits.includes('carte') && !flux.faits.includes('fse') && !present('Feuille de soins électronique')) {
+      for (const el of document.body.querySelectorAll('*')) {
+        if (el.closest('#sfc-panneau') || !visible(el) || nbDates(el) !== 1 || [...el.children].some((c) => nbDates(c) === 1)) continue;
+        let ligne = el;
+        while (ligne.parentElement && nbDates(ligne.parentElement) === 1 && norm(ligne.parentElement.textContent).length < 120) ligne = ligne.parentElement;
+        ajouter(norm(ligne.textContent), ligne, true);
+      }
+    }
+    // Puis les boutons visibles à l'écran (dans la fenêtre modale s'il y en a une), les plus bas d'abord.
+    const zone = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], .modal')].filter(visible).pop() || document.body;
+    const boutons = [];
+    for (const el of zone.querySelectorAll('button, [role="button"], a[href], input[type="button"], input[type="submit"]')) {
+      if (el.closest('#sfc-panneau') || !visible(el) || el.disabled) continue;
+      const r = el.getBoundingClientRect();
+      if (r.bottom >= 0 && r.top <= window.innerHeight) boutons.push({ el, top: r.top });
+    }
+    boutons.sort((a, b) => b.top - a.top);
+    for (const { el } of boutons) ajouter(norm(el.value || el.textContent), el, false);
+    return res.slice(0, 12);
+  }
+  function rafraichirMiroir(force) {
+    dernierMiroir = Date.now();
+    listeMiroir = candidatsPage();
+    const sig = listeMiroir.map((x) => x.t).join('|');
+    if (force || sig !== sigMiroir) { sigMiroir = sig; dessiner(); }
+  }
+  function montrerMiroir() {
+    miroir = true;
+    reduit = false; // sans l'enregistrer : on rouvre le panneau le temps du blocage
+    rafraichirMiroir(true);
   }
 
   async function attendre(fn, ms) {
@@ -362,6 +403,8 @@
 
   function demarrer() {
     flux = { debut: Date.now(), faits: [] };
+    miroir = false;
+    activite = Date.now();
     noter({}, true);
     fixerCb(0); // le montant de la FSE précédente n'a plus lieu d'être
     flux.somelog = patientSomelog();
@@ -374,6 +417,7 @@
   function terminer(message) {
     flux = null;
     sauver();
+    if (/^(⚠|Erreur|Temps dépassé)/.test(message)) montrerMiroir(); // le déroulé s'arrête : à toi de cliquer
     afficher(message);
   }
 
@@ -381,10 +425,16 @@
   setInterval(async () => {
     if (!panneau.isConnected) document.body.appendChild(panneau);
     surveillerRecap();
+    if (miroir && Date.now() - dernierMiroir > 1500) rafraichirMiroir();
     if (!flux || occupe) return;
     if (!flux.attente && Date.now() - flux.debut > DUREE_MAX_MS) return terminer(resume.validee ? 'FSE validée ✔ (fin à faire à la main)' : 'Temps dépassé, arrêt');
     const etape = ETAPES.find((e) => !flux.faits.includes(e.nom) && e.detecte());
-    if (!etape) return;
+    if (!etape) {
+      if (!miroir && !flux.attente && Date.now() - activite > STUCK_MS) montrerMiroir();
+      return;
+    }
+    miroir = false;
+    activite = Date.now();
     occupe = true;
     flux.faits.push(etape.nom);
     sauver();
@@ -395,6 +445,7 @@
     } catch (e) {
       terminer(e instanceof Arret ? '⚠ ' + e.message : 'Erreur : ' + e.message);
     }
+    activite = Date.now();
     occupe = false;
   }, 400);
 
@@ -405,17 +456,17 @@
   let pip = null;
   async function detacher() {
     try {
-      pip = await window.documentPictureInPicture.requestWindow({ width: 190, height: 400 });
+      pip = await window.documentPictureInPicture.requestWindow({ width: 200, height: 520 });
     } catch (e) {
       return afficher('⚠ Détachement impossible : ' + e.message);
     }
     pip.document.title = 'Stellair';
     pip.document.body.style.margin = '0';
-    Object.assign(panneau.style, { position: 'static', width: 'auto' });
+    Object.assign(panneau.style, { position: 'static', width: 'auto', maxHeight: '100vh' });
     pip.document.body.append(panneau);
     pip.addEventListener('pagehide', () => {
       pip = null;
-      Object.assign(panneau.style, { position: 'fixed', width: '130px' });
+      Object.assign(panneau.style, { position: 'fixed', width: '130px', maxHeight: '60vh' });
       document.body.append(panneau);
       dessiner();
     });
@@ -426,7 +477,7 @@
     position: 'fixed', right: '8px', top: '35%', zIndex: 99999, width: '130px',
     display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px',
     background: '#fff', border: '1px solid #4287d0', borderRadius: '10px',
-    boxShadow: '0 2px 8px rgba(0,0,0,.2)', font: '14px sans-serif',
+    boxShadow: '0 2px 8px rgba(0,0,0,.2)', font: '14px sans-serif', maxHeight: '60vh', overflowY: 'auto',
   });
   let message = '';
   function afficher(m) { message = m; dessiner(); }
@@ -478,6 +529,17 @@
       sumup.style.cssText = 'padding:8px;border-radius:8px;background:#2a9d5c;color:#fff;font-weight:bold;text-align:center';
       panneau.append(sumup);
       if (!flux) panneau.append(bouton('Effacer', 'padding:2px;border:0;background:none;color:#666;font-size:11px;cursor:pointer', () => fixerCb(0)));
+    }
+    panneau.append(bouton(miroir ? '🖱 Masquer' : '🖱 Page', 'padding:2px;border:1px solid #4287d0;border-radius:8px;background:#fff;color:#4287d0;font-size:11px;cursor:pointer',
+      () => { if (miroir) { miroir = false; dessiner(); } else montrerMiroir(); }));
+    if (miroir) {
+      const tete = document.createElement('div');
+      tete.textContent = listeMiroir.length ? 'Boutons de la page :' : 'Aucun bouton visible';
+      tete.style.cssText = 'font-size:11px;color:#555';
+      panneau.append(tete);
+      listeMiroir.forEach((c, i) => panneau.append(bouton((c.perso ? '👤 ' : '') + c.t,
+        'padding:5px;border:1px solid #4287d0;border-radius:8px;background:#eef5fd;color:#1a4f8a;font-size:12px;cursor:pointer;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
+        () => { cliquer(cliquable(listeMiroir[i].el)); setTimeout(() => rafraichirMiroir(true), 600); })));
     }
     if (!pip && window.documentPictureInPicture) {
       const d = document.createElement('button');
